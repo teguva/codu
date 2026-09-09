@@ -1,0 +1,43 @@
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: #10141c;
+  color: #e8eef8;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+
+.app { max-width: 1100px; margin: 0 auto; padding: 24px; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: 0.04em; }
+.sub { color: #9aa7ba; font-size: 0.95rem; }
+.health { display: flex; gap: 8px; align-items: center; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #666; }
+.dot.ok { background: #3dd68c; }
+.dot.bad { background: #ff5d5d; }
+.toolbar { margin: 20px 0; display: flex; gap: 12px; align-items: center; }
+button {
+  background: #2a6df5;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.6; cursor: default; }
+.muted { color: #9aa7ba; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #243044; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #182132; }
+.detail {
+  margin-top: 24px;
+  background: #182132;
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+pre { overflow: auto; font-size: 0.8rem; }
+code { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.error { color: #ff8b8b; }

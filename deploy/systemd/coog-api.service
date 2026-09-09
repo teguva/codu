@@ -1,0 +1,20 @@
+[Unit]
+Description=Coog API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/coog-api
+EnvironmentFile=-/etc/coog/coog.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+# Defaults if EnvironmentFile is missing. Override in /etc/coog/coog.env.
+Environment=COOG_LISTEN=:8090
+Environment=COOG_LIBRARY_PATH=%h/Videos
+Environment=COOG_DATA_PATH=%h/.local/share/coog
+
+[Install]
+WantedBy=multi-user.target

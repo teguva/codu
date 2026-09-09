@@ -1,0 +1,18 @@
+[Unit]
+Description=Coog API (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/coog-api
+EnvironmentFile=-%h/.config/coog/coog.env
+Restart=on-failure
+RestartSec=3
+
+Environment=COOG_LISTEN=:8090
+Environment=COOG_LIBRARY_PATH=%h/Videos
+Environment=COOG_DATA_PATH=%h/.local/share/coog
+
+[Install]
+WantedBy=default.target

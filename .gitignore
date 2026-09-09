@@ -1,0 +1,39 @@
+# Go
+server/coog-api
+server/coog-worker
+server/coverage.out
+*.exe
+*.test
+
+# Local data / media caches (repo root only — do not ignore server/internal/library or client data packages)
+/data/
+/library/
+*.db
+*.db-wal
+*.db-shm
+
+# Node / Svelte
+admin/node_modules/
+admin/dist/
+admin/.vite/
+
+# Android
+client/.gradle/
+client/build/
+client/app/build/
+client/local.properties
+client/.idea/
+*.iml
+captures/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Env with secrets
+.env
+.env.local
+deploy/coog.env

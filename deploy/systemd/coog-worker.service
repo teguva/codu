@@ -1,0 +1,14 @@
+[Unit]
+Description=Coog worker (acquire sidecar)
+After=network-online.target coog-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/coog-worker
+EnvironmentFile=-/etc/coog/coog.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

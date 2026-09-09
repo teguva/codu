@@ -1,0 +1,21 @@
+services:
+  api:
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      COOG_LISTEN: ":8090"
+      COOG_LIBRARY_PATH: /library
+      COOG_DATA_PATH: /data
+      COOG_AUTH_TOKEN: ${COOG_AUTH_TOKEN:-}
+      COOG_FFMPEG: ffmpeg
+      COOG_FFPROBE: ffprobe
+    volumes:
+      - ${COOG_LIBRARY_PATH:-${HOME}/Videos}:/library
+      - coog-data:/data
+    restart: unless-stopped
+
+volumes:
+  coog-data:

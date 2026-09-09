@@ -1,0 +1,95 @@
+openapi: 3.0.3
+info:
+  title: Coog API
+  version: 0.1.0
+  description: Control plane for the Coog media server.
+servers:
+  - url: http://127.0.0.1:8090
+paths:
+  /health:
+    get:
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: OK
+  /api/v1/library:
+    get:
+      summary: List media
+      responses:
+        "200":
+          description: Library items
+  /api/v1/library/{id}:
+    get:
+      summary: Media detail including probe
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Item
+        "404":
+          description: Not found
+  /api/v1/library/rescan:
+    post:
+      summary: Walk the library path and probe new/changed files
+      responses:
+        "200":
+          description: Scan counts
+  /api/v1/media/{id}/stream:
+    get:
+      summary: Byte-range stream of a finished file
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entire file
+        "206":
+          description: Partial content
+  /api/v1/playback/sessions:
+    post:
+      summary: Negotiate a play method and URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mediaId:
+                  type: string
+                jobId:
+                  type: string
+                clientCapabilities:
+                  type: object
+      responses:
+        "200":
+          description: Session (direct play today)
+        "409":
+          description: Remux/transcode required (not implemented)
+  /api/v1/jobs:
+    get:
+      summary: List acquire jobs (empty until Phase 5)
+      responses:
+        "200":
+          description: Job list
+  /api/v1/server/stats:
+    get:
+      summary: Disk, ffmpeg version, media count
+      responses:
+        "200":
+          description: Stats
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
