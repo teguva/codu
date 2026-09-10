@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"coog/internal/library"
 	"coog/internal/meta"
@@ -27,21 +28,62 @@ func (s *Server) handleBackdrop(w http.ResponseWriter, r *http.Request) {
 	s.serveArt(w, r, "backdrop")
 }
 
+func (s *Server) handleLogo(w http.ResponseWriter, r *http.Request) {
+	s.serveArt(w, r, "logo")
+}
+
 func (s *Server) serveArt(w http.ResponseWriter, r *http.Request, kind string) {
 	item, err := s.store.GetMedia(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media not found")
 		return
 	}
+	if kind == "logo" {
+		if img := probe.SidecarLogo(item.Path); img != "" {
+			serveImage(w, r, img)
+			return
+		}
+	}
 	dest := filepath.Join(s.cfg.DataPath, "artwork", item.ID+"-"+kind+".jpg")
+	if kind == "logo" {
+		dest = filepath.Join(s.cfg.DataPath, "artwork", item.ID+"-logo.png")
+	}
 	if err := s.ensureArt(r, item, dest, kind); err != nil {
 		slog.Debug("artwork", "id", item.ID, "kind", kind, "err", err)
 		writeError(w, http.StatusNotFound, "no artwork")
 		return
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
+	serveImage(w, r, dest)
+}
+
+func serveImage(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Content-Type", imageContentType(path))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, dest)
+	http.ServeFile(w, r, path)
+}
+
+func imageContentType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	default:
+		return "image/jpeg"
+	}
+}
+
+func sidecarArt(item store.MediaItem, kind string) string {
+	switch kind {
+	case "poster":
+		return probe.SidecarPoster(item.Path)
+	case "logo":
+		return probe.SidecarLogo(item.Path)
+	default:
+		return probe.SidecarBackdrop(item.Path)
+	}
 }
 
 func (s *Server) handleTrailer(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +95,9 @@ func (s *Server) handleTrailer(w http.ResponseWriter, r *http.Request) {
 	path := probe.SidecarTrailer(item.Path)
 	if path == "" {
 		info := s.meta.Ensure(r.Context(), item)
-		path = probe.LibraryTrailer(s.cfg.LibraryPath, info.ImdbID)
+		if meta.IdentityConfirmed(item.Path, info) {
+			path = probe.LibraryTrailer(s.cfg.LibraryPath, info.ImdbID)
+		}
 	}
 	if path == "" {
 		writeError(w, http.StatusNotFound, "no trailer")
@@ -77,8 +121,11 @@ func (s *Server) handleTrailer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind string) error {
-	if fresh(dest, item.MtimeUnix) {
-		return nil
+	if img := sidecarArt(item, kind); img != "" {
+		if kind == "logo" {
+			return nil
+		}
+		return s.prober.MaterializeImage(r.Context(), img, dest)
 	}
 	select {
 	case artworkGate <- struct{}{}:
@@ -86,23 +133,34 @@ func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind str
 	case <-r.Context().Done():
 		return r.Context().Err()
 	}
-	if fresh(dest, item.MtimeUnix) {
-		return nil
-	}
-
-	if kind == "poster" {
-		if img := probe.SidecarPoster(item.Path); img != "" {
-			return s.prober.MaterializeImage(r.Context(), img, dest)
+	if img := sidecarArt(item, kind); img != "" {
+		if kind == "logo" {
+			return nil
 		}
-	} else {
-		if img := probe.SidecarBackdrop(item.Path); img != "" {
-			return s.prober.MaterializeImage(r.Context(), img, dest)
-		}
+		return s.prober.MaterializeImage(r.Context(), img, dest)
 	}
 
 	info := s.meta.Ensure(r.Context(), item)
+	if !meta.IdentityConfirmed(item.Path, info) {
+		if kind == "poster" || kind == "logo" {
+			return errors.New("no artwork")
+		}
+		if fresh(dest, item.MtimeUnix) {
+			return nil
+		}
+		return s.prober.ExtractStill(r.Context(), item.Path, dest, item.DurationMs)
+	}
+
+	if fresh(dest, item.MtimeUnix) {
+		return nil
+	}
 	remote := info.PosterURL
-	if kind != "poster" {
+	switch kind {
+	case "logo":
+		remote = info.LogoURL
+	case "poster":
+		remote = info.PosterURL
+	default:
 		remote = info.BackdropURL
 	}
 	if remote != "" {
@@ -110,9 +168,8 @@ func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind str
 			return nil
 		}
 	}
-
-	if kind == "poster" {
-		return errors.New("no poster")
+	if kind == "poster" || kind == "logo" {
+		return errors.New("no artwork")
 	}
 	return s.prober.ExtractStill(r.Context(), item.Path, dest, item.DurationMs)
 }
@@ -129,9 +186,28 @@ func fresh(path string, itemMtime int64) bool {
 }
 
 func viewItem(item store.MediaItem, info meta.Info, origin string) map[string]any {
+	confirmed := meta.IdentityConfirmed(item.Path, info)
 	year := item.Year
-	if year == 0 && info.Year > 0 {
-		year = info.Year
+	imdb, tagline, plot := "", "", ""
+	rating := 0.0
+	genres := []string{}
+	matchStatus := strings.ToLower(strings.TrimSpace(info.MatchStatus))
+	if matchStatus == "ignored" || matchStatus == "suggested" {
+		// keep status, no catalog copy
+	} else if confirmed {
+		matchStatus = "matched"
+		if year == 0 && info.Year > 0 {
+			year = info.Year
+		}
+		imdb = info.ImdbID
+		tagline = info.Tagline
+		plot = info.Plot
+		rating = info.Rating
+		if info.Genres != nil {
+			genres = info.Genres
+		}
+	} else {
+		matchStatus = "unmatched"
 	}
 	out := map[string]any{
 		"id":           item.ID,
@@ -152,16 +228,29 @@ func viewItem(item store.MediaItem, info meta.Info, origin string) map[string]an
 		"height":       item.Height,
 		"hdr":          item.HDR,
 		"contentType":  item.ContentType,
-		"imdbId":       info.ImdbID,
-		"tagline":      info.Tagline,
-		"plot":         info.Plot,
-		"genres":       info.Genres,
-		"rating":       info.Rating,
+		"imdbId":       imdb,
+		"matchStatus":  matchStatus,
+		"tagline":      tagline,
+		"plot":         plot,
+		"genres":       genres,
+		"rating":       rating,
 		"posterUrl":    origin + "/api/v1/media/" + item.ID + "/poster",
 		"backdropUrl":  origin + "/api/v1/media/" + item.ID + "/backdrop",
 	}
-	if info.Genres == nil {
-		out["genres"] = []string{}
+	if confirmed {
+		out["logoUrl"] = origin + "/api/v1/media/" + item.ID + "/logo"
 	}
+	out["streamUrl"] = origin + "/api/v1/media/" + item.ID + "/stream"
+	probeError := ""
+	if item.CodecVideo == "" {
+		if item.DurationMs == 0 && len(item.Probe) == 0 {
+			probeError = "not probed"
+		} else if item.CodecAudio == "" {
+			probeError = "probe found no streams"
+		} else {
+			probeError = "no video stream"
+		}
+	}
+	out["probeError"] = probeError
 	return out
 }

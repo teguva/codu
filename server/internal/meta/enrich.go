@@ -16,15 +16,18 @@ import (
 )
 
 type Info struct {
-	ImdbID      string   `json:"imdbId,omitempty"`
-	Tagline     string   `json:"tagline,omitempty"`
-	Plot        string   `json:"plot,omitempty"`
-	Genres      []string `json:"genres,omitempty"`
-	Rating      float64  `json:"rating,omitempty"`
-	Year        int      `json:"year,omitempty"`
-	PosterURL   string   `json:"posterUrl,omitempty"`
-	BackdropURL string   `json:"backdropUrl,omitempty"`
-	Source      string   `json:"source,omitempty"`
+	ImdbID         string   `json:"imdbId,omitempty"`
+	Tagline        string   `json:"tagline,omitempty"`
+	Plot           string   `json:"plot,omitempty"`
+	Genres         []string `json:"genres,omitempty"`
+	Rating         float64  `json:"rating,omitempty"`
+	Year           int      `json:"year,omitempty"`
+	PosterURL      string   `json:"posterUrl,omitempty"`
+	BackdropURL    string   `json:"backdropUrl,omitempty"`
+	LogoURL        string   `json:"logoUrl,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	MatchStatus    string   `json:"matchStatus,omitempty"` // matched|unmatched|ignored|suggested
+	RuntimeMinutes int      `json:"runtimeMinutes,omitempty"`
 }
 
 type Enricher struct {
@@ -63,8 +66,15 @@ func (e *Enricher) Peek(id string) (Info, bool) {
 }
 
 func (e *Enricher) Ensure(ctx context.Context, item store.MediaItem) Info {
-	if info, ok := e.Peek(item.ID); ok {
-		if info.ImdbID != "" {
+	if sc, ok := ReadSidecar(item.Path); ok && sc.MatchStatus == "ignored" {
+		info := infoFromSidecar(sc)
+		info.Source = "ignored"
+		e.store(item.ID, info)
+		return info
+	}
+	if info, ok := e.Peek(item.ID); ok && e.cacheStillValid(item, info) {
+		e.persistIdentity(item, info)
+		if IdentityConfirmed(item.Path, info) {
 			if e.tmdbEnabled() && info.Tagline == "" && !strings.Contains(info.Source, "tmdb") {
 				title := item.Title
 				if item.Kind == "episode" && item.ShowTitle != "" {
@@ -73,11 +83,9 @@ func (e *Enricher) Ensure(ctx context.Context, item store.MediaItem) Info {
 				info = e.overlayTMDB(ctx, item.Kind, info, title, item.Year)
 				e.store(item.ID, info)
 			}
-			return info
+			e.persistLocalArt(ctx, item, &info)
 		}
-		if info.Source == "none" && cacheAge(e.cachePath(item.ID)) < 24*time.Hour {
-			return info
-		}
+		return info
 	}
 	e.mu.Lock()
 	if ch, ok := e.inflight[item.ID]; ok {
@@ -94,7 +102,15 @@ func (e *Enricher) Ensure(ctx context.Context, item store.MediaItem) Info {
 	done := make(chan struct{})
 	e.inflight[item.ID] = done
 	e.mu.Unlock()
+	prev, hadPrev := e.Peek(item.ID)
 	info := e.resolve(ctx, item)
+	if info.MatchStatus != "matched" && hadPrev && (prev.ImdbID != "" || prev.MatchStatus == "matched") {
+		e.invalidateArtwork(item.ID)
+	}
+	e.persistIdentity(item, info)
+	if info.MatchStatus == "matched" {
+		e.persistLocalArt(ctx, item, &info)
+	}
 	e.store(item.ID, info)
 	e.mu.Lock()
 	delete(e.inflight, item.ID)
@@ -111,12 +127,30 @@ func (e *Enricher) Warm(ctx context.Context, items []store.MediaItem) {
 				return
 			default:
 			}
-			if _, ok := e.Peek(item.ID); ok {
-				continue
-			}
 			e.Ensure(ctx, item)
 		}
 	}()
+}
+
+func (e *Enricher) cacheStillValid(item store.MediaItem, info Info) bool {
+	if sc, ok := ReadSidecar(item.Path); ok && sc.MatchStatus == "ignored" {
+		return true
+	}
+	explicit := FindIMDB(item.Path, item.Title, item.Year)
+	status := strings.ToLower(strings.TrimSpace(info.MatchStatus))
+	if status == "unmatched" || status == "ignored" || info.Source == "unmatched" || info.Source == "ignored" || info.Source == "none" {
+		if explicit != "" {
+			return false
+		}
+		return cacheAge(e.cachePath(item.ID)) < 24*time.Hour
+	}
+	if info.ImdbID == "" {
+		return cacheAge(e.cachePath(item.ID)) < 24*time.Hour
+	}
+	if explicit == "" {
+		return false
+	}
+	return strings.EqualFold(explicit, info.ImdbID)
 }
 
 func (e *Enricher) resolve(ctx context.Context, item store.MediaItem) Info {
@@ -124,26 +158,57 @@ func (e *Enricher) resolve(ctx context.Context, item store.MediaItem) Info {
 	if item.Kind == "episode" && item.ShowTitle != "" {
 		title = item.ShowTitle
 	}
+
+	if sc, ok := ReadSidecar(item.Path); ok {
+		switch sc.MatchStatus {
+		case "ignored":
+			info := infoFromSidecar(sc)
+			info.Source = "ignored"
+			return info
+		case "suggested":
+			info := infoFromSidecar(sc)
+			info.ImdbID = ""
+			info.PosterURL = ""
+			info.BackdropURL = ""
+			info.LogoURL = ""
+			info.MatchStatus = "suggested"
+			info.Source = "sidecar"
+			return info
+		}
+	}
+
 	imdb := FindIMDB(item.Path, title, item.Year)
-	var info Info
-	var err error
-	if imdb != "" {
-		info, err = e.cinemetaByIMDB(ctx, item.Kind, imdb)
-		if err != nil {
-			slog.Debug("cinemeta imdb", "id", item.ID, "imdb", imdb, "err", err)
-			info = Info{ImdbID: imdb, PosterURL: metahubPoster(imdb), BackdropURL: metahubBackdrop(imdb), Source: "metahub"}
+	if imdb == "" {
+		return Info{Source: "none", MatchStatus: "unmatched"}
+	}
+
+	info, err := e.cinemetaByIMDB(ctx, item.Kind, imdb)
+	if err != nil {
+		slog.Debug("cinemeta imdb", "id", item.ID, "imdb", imdb, "err", err)
+		info = Info{
+			ImdbID:      imdb,
+			PosterURL:   metahubPoster(imdb),
+			BackdropURL: metahubBackdrop(imdb),
+			LogoURL:     metahubLogo(imdb),
+			Source:      "metahub",
+			MatchStatus: "matched",
 		}
 	} else {
-		info, err = e.cinemetaSearch(ctx, item.Kind, title, item.Year)
-		if err != nil {
-			slog.Debug("cinemeta search", "id", item.ID, "title", title, "err", err)
+		info.MatchStatus = "matched"
+	}
+	if sc, ok := ReadSidecar(item.Path); ok && sc.MatchStatus == "matched" {
+		if sc.Plot != "" {
+			info.Plot = sc.Plot
+		}
+		if sc.Tagline != "" {
+			info.Tagline = sc.Tagline
 		}
 	}
-	if info.ImdbID != "" {
-		info = e.overlayTMDB(ctx, item.Kind, info, title, item.Year)
-	}
-	if info.ImdbID == "" && info.PosterURL == "" && info.Plot == "" {
-		info.Source = "none"
+	info = e.overlayTMDB(ctx, item.Kind, info, title, item.Year)
+	info.MatchStatus = "matched"
+	info.ImdbID = imdb
+	if info.LogoURL == "" {
+		info.LogoURL = metahubLogo(imdb)
 	}
 	return info
 }

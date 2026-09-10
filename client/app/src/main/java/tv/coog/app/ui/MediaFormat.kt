@@ -36,6 +36,7 @@ fun MediaItem.seriesName(): String {
 
 fun MediaItem.headline(): String = when (kind) {
     "episode" -> seriesName()
+    "series" -> cleanReleaseName(title).ifBlank { title }
     else -> cleanReleaseName(title).ifBlank { title }
 }
 
@@ -113,6 +114,26 @@ fun formatDuration(ms: Long): String? {
     return if (h > 0) "${h}h ${m}m" else "${m} min"
 }
 
+fun friendlyPlayError(raw: String): String {
+    val text = raw.trim()
+    val lower = text.lowercase()
+    if (text.startsWith("Real-Debrid", ignoreCase = true) && text.length > 48) {
+        return text
+    }
+    return when {
+        "451" in lower || "infringing" in lower || "blocklist" in lower ->
+            "Real-Debrid blocked this torrent: the filename or hash is on their blocklist. Pick another source — Cached / RD+ usually work."
+        lower.contains("invalid_token") || lower.contains("bad_token") ||
+            (lower.contains("real-debrid") && "401" in lower) ->
+            "Real-Debrid rejected the API token. Update it in Settings."
+        lower.contains("traffic") && lower.contains("real-debrid") ->
+            "Real-Debrid traffic limit reached. Wait for reset or upgrade the account."
+        lower.contains("real-debrid") ->
+            "Real-Debrid could not start this file. Try another source."
+        else -> text
+    }
+}
+
 fun formatClock(ms: Long): String {
     if (ms <= 0) return "0:00"
     val total = ms / 1000
@@ -120,6 +141,17 @@ fun formatClock(ms: Long): String {
     val m = (total % 3600) / 60
     val s = total % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
+fun playbackDurationMs(exoDuration: Long, expectedMs: Long, bufferedMs: Long, streaming: Boolean): Long {
+    val exo = if (exoDuration > 0) exoDuration else 0L
+    if (expectedMs > 0) {
+        return maxOf(expectedMs, exo)
+    }
+    if (streaming && exo > 0 && bufferedMs > 0 && exo <= bufferedMs + 5_000L) {
+        return 0L
+    }
+    return exo
 }
 
 fun MediaItem.posterColors(): Pair<Color, Color> {
@@ -161,16 +193,47 @@ fun MediaItem.libraryBucket(): String {
 data class ShowRow(
     val name: String,
     val episodes: List<MediaItem>,
+    val header: MediaItem? = null,
 ) {
-    val cover: MediaItem get() = episodes.first()
+    val cover: MediaItem get() = header ?: episodes.firstOrNull() ?: MediaItem(id = "", kind = "series", title = name)
     val subtitle: String get() {
         val seasons = episodes.map { it.season }.filter { it > 0 }.distinct().size
         val n = episodes.size
+        val local = episodes.count { it.isLocal() }
         return when {
+            local > 0 && local < n -> "$local of $n on disk"
             seasons > 1 -> "$seasons seasons  ·  $n episodes"
             else -> "$n episodes"
         }
     }
+}
+
+fun mergeShowEpisodes(catalog: List<MediaItem>, local: List<MediaItem>): List<MediaItem> {
+    if (catalog.isEmpty()) return local
+    if (local.isEmpty()) return catalog
+    val localBySE = LinkedHashMap<Pair<Int, Int>, MediaItem>()
+    for (ep in local) {
+        localBySE.putIfAbsent(ep.season to ep.episode, ep)
+    }
+    val seen = HashSet<Pair<Int, Int>>()
+    val out = ArrayList<MediaItem>(catalog.size + local.size)
+    for (ep in catalog) {
+        val key = ep.season to ep.episode
+        seen.add(key)
+        val loc = localBySE[key]
+        out.add(
+            if (loc == null) ep
+            else ep.copy(
+                inLibrary = true,
+                libraryId = loc.libraryId.ifBlank { loc.id },
+                path = loc.path.ifBlank { ep.path },
+            ),
+        )
+    }
+    local.filter { (it.season to it.episode) !in seen }
+        .sortedWith(compareBy({ it.season }, { it.episode }, { it.title }))
+        .forEach { out.add(it) }
+    return out
 }
 
 data class FolderRow(
@@ -184,8 +247,35 @@ data class FolderRow(
     }
 }
 
-fun List<MediaItem>.movieItems(): List<MediaItem> =
-    filter { it.kind == "movie" }.sortedBy { it.headline().lowercase() }
+fun List<MediaItem>.movieItems(): List<MediaItem> {
+    val showNames = showRows().map { it.name }
+    return filter { item ->
+        if (item.kind != "movie") return@filter false
+        if (item.season > 0 || item.episode > 0 || item.showTitle.isNotBlank()) return@filter false
+        if (looksLikeEpisodeFile(item)) return@filter false
+        showNames.none { matchesShowTitle(item.headline(), it) }
+    }.sortedBy { it.headline().lowercase() }
+}
+
+fun matchesShowTitle(title: String, showName: String): Boolean {
+    val a = normalizeBrowseTitle(title)
+    val b = normalizeBrowseTitle(showName)
+    return a.isNotBlank() && b.isNotBlank() && (a == b || a.startsWith("$b "))
+}
+
+private val yearSuffixRe = Regex("""\s*\(\d{4}\)\s*$""")
+
+fun normalizeBrowseTitle(raw: String): String =
+    yearSuffixRe.replace(cleanReleaseName(raw), "")
+        .replace('’', '\'')
+        .replace('‘', '\'')
+        .lowercase()
+        .trim()
+
+private val episodePathRe = Regex("""(?i)(?:[/\\]season\s*\d+|s\d{1,2}e\d{1,3})""")
+
+private fun looksLikeEpisodeFile(item: MediaItem): Boolean =
+    episodePathRe.containsMatchIn("${item.path} ${item.title}")
 
 fun List<MediaItem>.showRows(): List<ShowRow> =
     filter { it.kind == "episode" && !it.isTrailer() }
@@ -212,13 +302,42 @@ fun List<MediaItem>.folderRows(): List<FolderRow> =
 
 fun MediaItem.kindLabel(): String = when (kind) {
     "movie" -> "Movie"
-    "episode" -> "Series"
+    "episode", "series" -> "Series"
     else -> "Video"
 }
 
-fun MediaItem.heroSubtitle(): String = tagline.trim()
+fun MediaItem.hasOfficialMeta(): Boolean = when (matchStatus.lowercase()) {
+    "unmatched", "ignored", "suggested" -> false
+    "matched" -> true
+    else -> path.isBlank() || imdbId.isNotBlank()
+}
+
+fun MediaItem.heroGenres(): List<String> =
+    if (!hasOfficialMeta()) emptyList()
+    else genres.map { it.trim() }.filter { it.isNotBlank() }.take(3)
+
+fun MediaItem.heroMetaLine(): String {
+    if (!hasOfficialMeta() && year <= 0 && durationMs <= 0 && runtimeMinutes <= 0) return ""
+    val runtime = when {
+        runtimeMinutes > 0 -> formatDuration(runtimeMinutes * 60_000L)
+        durationMs > 0 -> formatDuration(durationMs)
+        else -> null
+    }
+    return listOfNotNull(
+        country.takeIf { hasOfficialMeta() && it.isNotBlank() },
+        year.takeIf { it > 0 }?.toString(),
+        certification.takeIf { hasOfficialMeta() && it.isNotBlank() },
+        runtime,
+    ).joinToString("  ·  ")
+}
+
+fun MediaItem.heroSubtitle(): String {
+    if (!hasOfficialMeta()) return ""
+    return tagline.trim()
+}
 
 fun MediaItem.heroDescription(): String {
+    if (!hasOfficialMeta()) return ""
     val plot = plot.trim()
     val tag = heroSubtitle()
     if (plot.isBlank()) return ""
@@ -226,14 +345,39 @@ fun MediaItem.heroDescription(): String {
     return plot
 }
 
-fun MediaItem.heroChips(rowLabel: String = kindLabel()): List<String> {
+fun MediaItem.heroChips(rowLabel: String = kindLabel(), jobs: List<tv.coog.app.data.JobItem> = emptyList()): List<String> {
     val chips = mutableListOf<String>()
+    posterBadgeLabel(jobs)?.let { chips.add(it) }
     if (rowLabel.isNotBlank()) chips.add(rowLabel)
     year.takeIf { it > 0 }?.toString()?.let { chips.add(it) }
     formatDuration(durationMs)?.let { chips.add(it) }
-    if (rating > 0) chips.add("★ ${"%.1f".format(rating)}")
-    chips.addAll(genres.map { it.trim() }.filter { it.isNotBlank() }.take(3))
+    if (hasOfficialMeta() && rating > 0) chips.add("★ ${"%.1f".format(rating)}")
+    if (hasOfficialMeta()) chips.addAll(genres.map { it.trim() }.filter { it.isNotBlank() }.take(3))
     return chips
+}
+
+fun MediaItem.posterBadgeLabel(jobs: List<tv.coog.app.data.JobItem> = emptyList()): String? {
+    val imdb = imdbId
+    val job = if (imdb.isNotBlank()) {
+        jobs.firstOrNull { it.imdbId.equals(imdb, ignoreCase = true) && it.status != "finished" && it.status != "cancelled" && it.status != "error" }
+    } else {
+        null
+    }
+    return when {
+        job?.status == "queued" -> "Fetching"
+        job != null -> {
+            val pct = (job.progress * 100).toInt()
+            when {
+                pct > 0 -> "↓ $pct%"
+                job.ready -> "Ready"
+                else -> "Downloading"
+            }
+        }
+        path.isNotBlank() || inLibrary -> "Local"
+        releasePhase == "coming_soon" -> "Coming soon"
+        releasePhase == "theatrical" -> "In theatres"
+        else -> null
+    }
 }
 
 fun List<MediaItem>.librarySummary(): String {

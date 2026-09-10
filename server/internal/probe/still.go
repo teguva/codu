@@ -2,35 +2,132 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
 func SidecarPoster(mediaPath string) string {
-	dir := filepath.Dir(mediaPath)
 	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	if sc, base, ok := readSidecarNames(mediaPath); ok && sc.poster != "" {
+		if p := resolveBeside(base, sc.poster); p != "" {
+			return p
+		}
+	}
 	names := []string{
 		stem + "-poster.jpg", stem + "-poster.png", stem + "-poster.webp",
 		"poster.jpg", "poster.png", "poster.webp",
 		"cover.jpg", "cover.png", "folder.jpg", "folder.png",
 		stem + ".jpg", stem + ".png",
 	}
-	return firstExisting(dir, names)
+	return firstExistingIn(artSearchDirs(mediaPath), names)
 }
 
 func SidecarBackdrop(mediaPath string) string {
-	dir := filepath.Dir(mediaPath)
 	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	if sc, base, ok := readSidecarNames(mediaPath); ok && sc.fanart != "" {
+		if p := resolveBeside(base, sc.fanart); p != "" {
+			return p
+		}
+	}
 	names := []string{
 		stem + "-backdrop.jpg", stem + "-backdrop.png", stem + "-fanart.jpg",
 		"fanart.jpg", "fanart.png", "backdrop.jpg", "backdrop.png",
 		"background.jpg", "background.png", "banner.jpg",
 	}
-	return firstExisting(dir, names)
+	return firstExistingIn(artSearchDirs(mediaPath), names)
+}
+
+func SidecarLogo(mediaPath string) string {
+	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	if sc, base, ok := readSidecarNames(mediaPath); ok && sc.logo != "" {
+		if p := resolveBeside(base, sc.logo); p != "" {
+			return p
+		}
+	}
+	names := []string{
+		stem + "-logo.png", stem + "-logo.webp", stem + "-clearlogo.png",
+		"logo.png", "logo.webp", "clearlogo.png", "clearlogo.webp",
+		"logo.jpg", "clearlogo.jpg",
+	}
+	return firstExistingIn(artSearchDirs(mediaPath), names)
+}
+
+type sidecarArtNames struct {
+	poster string
+	fanart string
+	logo   string
+}
+
+func readSidecarNames(mediaPath string) (sidecarArtNames, string, bool) {
+	dir := filepath.Dir(mediaPath)
+	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	candidates := []string{
+		filepath.Join(dir, "coog.json"),
+		filepath.Join(dir, stem+".coog.json"),
+	}
+	if seasonDirNameRe.MatchString(filepath.Base(dir)) {
+		candidates = append(candidates, filepath.Join(filepath.Dir(dir), "coog.json"))
+	}
+	for _, p := range candidates {
+		b, err := os.ReadFile(p)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		var raw struct {
+			Poster string `json:"poster"`
+			Fanart string `json:"fanart"`
+			Logo   string `json:"logo"`
+		}
+		if err := json.Unmarshal(b, &raw); err != nil {
+			continue
+		}
+		return sidecarArtNames{poster: raw.Poster, fanart: raw.Fanart, logo: raw.Logo}, filepath.Dir(p), true
+	}
+	return sidecarArtNames{}, "", false
+}
+
+func artSearchDirs(mediaPath string) []string {
+	dir := filepath.Dir(mediaPath)
+	art := dir
+	if seasonDirNameRe.MatchString(filepath.Base(dir)) {
+		art = filepath.Dir(dir)
+	}
+	if art != dir {
+		return []string{dir, art}
+	}
+	return []string{dir}
+}
+
+var seasonDirNameRe = regexp.MustCompile(`(?i)^Season\s+(\d{1,2})$`)
+
+func firstExistingIn(dirs []string, names []string) string {
+	for _, dir := range dirs {
+		if p := firstExisting(dir, names); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func resolveBeside(dir, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "..") {
+		return ""
+	}
+	if filepath.IsAbs(name) {
+		return ""
+	}
+	p := filepath.Join(dir, filepath.Clean(name))
+	if st, err := os.Stat(p); err == nil && st.Size() > 32 {
+		return p
+	}
+	return ""
 }
 
 func firstExisting(dir string, names []string) string {

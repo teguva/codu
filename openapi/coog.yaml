@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Coog API
-  version: 0.1.0
+  version: 0.1.1
   description: Control plane for the Coog media server.
 servers:
   - url: http://127.0.0.1:8090
@@ -13,15 +13,27 @@ paths:
       responses:
         "200":
           description: OK
+  /ws:
+    get:
+      summary: Job and library events
+      parameters:
+        - in: query
+          name: token
+          schema:
+            type: string
+          description: Bearer token when Authorization cannot be set on the handshake
+      responses:
+        "101":
+          description: WebSocket upgrade
   /api/v1/library:
     get:
-      summary: List media
+      summary: List media (probe fields plus identity-confirmed metadata and artwork URLs)
       responses:
         "200":
           description: Library items
   /api/v1/library/{id}:
     get:
-      summary: Media detail including probe
+      summary: Media detail including probe and metadata
       parameters:
         - in: path
           name: id
@@ -53,6 +65,74 @@ paths:
           description: Entire file
         "206":
           description: Partial content
+  /api/v1/media/{id}/poster:
+    get:
+      summary: Poster JPEG
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: JPEG
+        "404":
+          description: No poster
+  /api/v1/media/{id}/backdrop:
+    get:
+      summary: Backdrop / fanart JPEG
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: JPEG
+        "404":
+          description: No backdrop
+  /api/v1/media/{id}/logo:
+    get:
+      summary: Clearlogo / title logo (PNG when sidecar, otherwise cached download)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PNG or JPEG
+        "404":
+          description: No logo
+  /api/v1/media/{id}/artwork:
+    get:
+      summary: Backdrop alias
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: JPEG
+  /api/v1/media/{id}/trailer:
+    get:
+      summary: Sidecar or library trailer stream
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trailer
+        "404":
+          description: None
   /api/v1/playback/sessions:
     post:
       summary: Negotiate a play method and URL
@@ -71,21 +151,260 @@ paths:
                   type: object
       responses:
         "200":
-          description: Session (direct play today)
+          description: Session (direct or progressive HLS)
         "409":
           description: Remux/transcode required (not implemented)
   /api/v1/jobs:
     get:
-      summary: List acquire jobs (empty until Phase 5)
+      summary: List acquire jobs
       responses:
         "200":
           description: Job list
+    post:
+      summary: Enqueue a yt-dlp job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                type:
+                  type: string
+                  default: ytdlp
+                url:
+                  type: string
+                title:
+                  type: string
+      responses:
+        "201":
+          description: Job created
+        "400":
+          description: Unsupported type or missing URL
+  /api/v1/jobs/{id}:
+    get:
+      summary: Job detail (progress, ready, expectedDurationMs, bufferedMs)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+                    type: string
+      responses:
+        "200":
+          description: Job
+        "404":
+          description: Not found
+  /api/v1/jobs/{id}/retry:
+    post:
+      summary: Re-queue a failed or cancelled job
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job
+        "409":
+          description: Not retryable
+  /api/v1/catalog/home:
+    get:
+      summary: Trending movies and series (TMDB day trending, Cinemeta top fallback)
+      responses:
+        "200":
+          description: Catalog rows
+  /api/v1/catalog/series/{imdb}:
+    get:
+      summary: Series episodes from Cinemeta
+      parameters:
+        - in: path
+          name: imdb
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Show plus episodes
+  /api/v1/catalog/title/{imdb}:
+    get:
+      summary: Title details including cast and release phase
+      parameters:
+        - in: path
+          name: imdb
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: kind
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Catalog title
+  /api/v1/catalog/title/{imdb}/similar:
+    get:
+      summary: Similar titles from TMDB
+      parameters:
+        - in: path
+          name: imdb
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: kind
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Similar catalog titles
+  /api/v1/catalog/tmdb/{kind}/{id}:
+    get:
+      summary: Resolve a TMDB movie or TV id to a catalog title
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Catalog title
+  /api/v1/catalog/search:
+    get:
+      summary: Search movies, series, and people via TMDB
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results
+        "400":
+          description: Missing query
+  /api/v1/catalog/person/{id}:
+    get:
+      summary: Person profile and combined credits
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Person credits
+  /api/v1/catalog/streams:
+    get:
+      summary: Torrentio and Real-Debrid source candidates for a title
+      parameters:
+        - in: query
+          name: imdb
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: kind
+          schema:
+            type: string
+        - in: query
+          name: season
+          schema:
+            type: integer
+        - in: query
+          name: episode
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Stream candidates
+        "400":
+          description: Missing imdb id
+  /api/v1/settings/streaming:
+    get:
+      summary: Streaming settings (token is masked)
+      responses:
+        "200":
+          description: Settings
+    put:
+      summary: Update streaming settings
+      responses:
+        "200":
+          description: Settings
+  /api/v1/jobs/{id}/cancel:
+    post:
+      summary: Cancel a queued or in-progress job and stop the worker process
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job
+        "409":
+          description: Already finished
+  /api/v1/jobs/{id}/pause:
+    post:
+      summary: Pause a queued or in-progress job; resume with retry
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job
+        "409":
+          description: Cannot pause
+  /api/v1/jobs/{id}/progressive/{file}:
+    get:
+      summary: Growing HLS playlist or segment for an in-progress job
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: file
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Playlist or MPEG-TS segment
+        "404":
+          description: Not found
   /api/v1/server/stats:
     get:
-      summary: Disk, ffmpeg version, media count
+      summary: Disk, ffmpeg, media count, worker heartbeat, Real-Debrid account, job counters
       responses:
         "200":
           description: Stats
+  /api/v1/server/activity:
+    get:
+      summary: Recent client and server activity (in-memory ring buffer)
+      responses:
+        "200":
+          description: Activity events
+  /api/v1/client/events:
+    post:
+      summary: TV client play, session, or player error
+      responses:
+        "201":
+          description: Recorded event
 components:
   securitySchemes:
     bearerAuth:

@@ -68,24 +68,39 @@ func (e *Enricher) cinemetaSearch(ctx context.Context, kind, title string, year 
 	return infoFromCinemeta(picked, picked.ID), nil
 }
 
+// pickCinemeta only accepts an exact title match. With a known year, the
+// release year must match; without a year, the exact title must be unique.
+// Fuzzy / first-hit results are never applied — they invent wrong headings.
 func pickCinemeta(metas []cinemetaMeta, title string, year int) cinemetaMeta {
 	want := strings.ToLower(strings.TrimSpace(title))
-	var best cinemetaMeta
-	bestScore := 0
+	if want == "" {
+		return cinemetaMeta{}
+	}
+	var exact []cinemetaMeta
 	for _, m := range metas {
 		if !strings.HasPrefix(m.ID, "tt") {
 			continue
 		}
-		score := nameScore(want, strings.ToLower(m.Name), year, yearFromRelease(m.ReleaseInfo))
-		if score > bestScore {
-			bestScore = score
-			best = m
+		if strings.ToLower(strings.TrimSpace(m.Name)) != want {
+			continue
 		}
+		exact = append(exact, m)
 	}
-	if bestScore < 2 {
+	if len(exact) == 0 {
 		return cinemetaMeta{}
 	}
-	return best
+	if year > 0 {
+		for _, m := range exact {
+			if yearFromRelease(m.ReleaseInfo) == year {
+				return m
+			}
+		}
+		return cinemetaMeta{}
+	}
+	if len(exact) == 1 {
+		return exact[0]
+	}
+	return cinemetaMeta{}
 }
 
 func nameScore(want, got string, wantYear, gotYear int) int {
@@ -142,16 +157,22 @@ func infoFromCinemeta(m cinemetaMeta, imdb string) Info {
 		Year:        yearFromRelease(m.ReleaseInfo),
 		PosterURL:   strings.TrimSpace(m.Poster),
 		BackdropURL: strings.TrimSpace(m.Background),
+		LogoURL:     strings.TrimSpace(m.Logo),
 		Source:      "cinemeta",
+		MatchStatus: "matched",
 	}
 	if r, err := strconv.ParseFloat(m.IMDBRating, 64); err == nil {
 		info.Rating = r
 	}
+	info.RuntimeMinutes = parseRuntimeMinutes(m.Runtime)
 	if info.PosterURL == "" && imdb != "" {
 		info.PosterURL = metahubPoster(imdb)
 	}
 	if info.BackdropURL == "" && imdb != "" {
 		info.BackdropURL = metahubBackdrop(imdb)
+	}
+	if info.LogoURL == "" && imdb != "" {
+		info.LogoURL = metahubLogo(imdb)
 	}
 	return info
 }
@@ -161,6 +182,27 @@ func cinemetaType(kind string) string {
 		return "series"
 	}
 	return "movie"
+}
+
+func parseRuntimeMinutes(raw string) int {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			n = n*10 + int(r-'0')
+			continue
+		}
+		if n > 0 {
+			break
+		}
+	}
+	if n <= 0 || n > 600 {
+		return 0
+	}
+	return n
 }
 
 func yearFromRelease(s string) int {
@@ -178,4 +220,8 @@ func metahubPoster(imdb string) string {
 
 func metahubBackdrop(imdb string) string {
 	return "https://images.metahub.space/background/medium/" + imdb + "/img"
+}
+
+func metahubLogo(imdb string) string {
+	return "https://images.metahub.space/logo/medium/" + imdb + "/img"
 }

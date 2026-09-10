@@ -5,11 +5,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"coog/internal/library"
 )
 
 var imdbIDRe = regexp.MustCompile(`tt\d{7,}`)
 
 func FindIMDB(mediaPath, title string, year int) string {
+	if sc, ok := ReadSidecar(mediaPath); ok && sc.ImdbID != "" && sc.MatchStatus != "ignored" && sc.MatchStatus != "unmatched" && sc.MatchStatus != "suggested" {
+		return sc.ImdbID
+	}
 	if id := firstIMDB(mediaPath); id != "" {
 		return id
 	}
@@ -23,8 +28,17 @@ func FindIMDB(mediaPath, title string, year int) string {
 	if id := scanNFO(dir); id != "" {
 		return id
 	}
-	if id := scanNFO(filepath.Dir(dir)); id != "" {
-		return id
+	if library.IsSeasonDir(filepath.Base(dir)) {
+		showDir := filepath.Dir(dir)
+		if id := firstIMDB(showDir); id != "" {
+			return id
+		}
+		if id := firstIMDB(filepath.Base(showDir)); id != "" {
+			return id
+		}
+		if id := scanNFO(showDir); id != "" {
+			return id
+		}
 	}
 	_ = title
 	_ = year

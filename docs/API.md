@@ -1,24 +1,47 @@
 # Coog API (v1)
 
 Base: `/api/v1`  
-Auth: `Authorization: Bearer <COOG_AUTH_TOKEN>` when the token is set. `GET /health` is public.
+Auth: `Authorization: Bearer <COOG_AUTH_TOKEN>` when the token is set. `GET /health` is public. WebSocket clients may pass `?token=` on `/ws`.
 
 Machine-readable: [`../openapi/coog.yaml`](../openapi/coog.yaml)
 
 | Method | Path | Status |
 |--------|------|--------|
 | GET | `/health` | implemented |
-| GET | `/api/v1/library` | implemented |
+| GET | `/api/v1/library` | implemented (includes metadata + artwork URLs) |
 | GET | `/api/v1/library/{id}` | implemented |
 | POST | `/api/v1/library/rescan` | implemented |
 | GET | `/api/v1/media/{id}/stream` | implemented (HTTP Range) |
-| POST | `/api/v1/playback/sessions` | implemented (direct only) |
-| GET | `/api/v1/jobs` | empty list stub |
-| GET | `/api/v1/server/stats` | implemented |
-| POST | `/api/v1/jobs` | Phase 5 |
-| GET | `/api/v1/jobs/{id}` | Phase 5 |
-| GET | `/api/v1/jobs/{id}/progressive/*` | Phase 5 |
-| WS | `/ws` | Phase 5 |
+| GET | `/api/v1/media/{id}/poster` | implemented |
+| GET | `/api/v1/media/{id}/backdrop` | implemented |
+| GET | `/api/v1/media/{id}/logo` | implemented (sidecar `logo.png` / clearlogo, else matched Metahub/Cinemeta) |
+| GET | `/api/v1/media/{id}/artwork` | implemented (backdrop alias) |
+| GET | `/api/v1/media/{id}/trailer` | implemented when a sidecar or library trailer exists |
+| POST | `/api/v1/playback/sessions` | implemented (`direct` or `progressive`) |
+| GET | `/api/v1/catalog/home` | implemented (TMDB trending, Cinemeta fallback; overlapping library titles stay and set `inLibrary`) |
+| GET | `/api/v1/catalog/series/{imdb}` | implemented (episodes, cast, local episode flags) |
+| GET | `/api/v1/catalog/title/{imdb}` | implemented (`?kind=movie\|series`; plot, cast, runtime, certification, country, director, `releasePhase`) |
+| GET | `/api/v1/catalog/title/{imdb}/similar` | implemented (`?kind=`; TMDB similar titles) |
+| GET | `/api/v1/catalog/tmdb/{kind}/{id}` | implemented (resolve TMDB id to a catalog title) |
+| GET | `/api/v1/catalog/search` | implemented (`?q=`; movies, series, people via TMDB) |
+| GET | `/api/v1/catalog/person/{id}` | implemented (TMDB combined credits) |
+| GET | `/api/v1/catalog/streams` | implemented (`?imdb=&kind=&season=&episode=`; Torrentio/RD candidates) |
+| GET/PUT | `/api/v1/settings/streaming` | implemented |
+| GET | `/api/v1/jobs` | implemented |
+| POST | `/api/v1/jobs` | implemented (`type: ytdlp`, `http`, `debrid`) |
+| GET | `/api/v1/jobs/{id}` | implemented |
+| POST | `/api/v1/jobs/{id}/cancel` | implemented (marks cancelled; worker kills ffmpeg/yt-dlp) |
+| POST | `/api/v1/jobs/{id}/pause` | implemented (stops the worker; files stay; resume with retry) |
+| POST | `/api/v1/jobs/{id}/retry` | implemented (re-queues `error` / `cancelled` / `paused`) |
+| GET | `/api/v1/jobs/{id}/progressive/{file}` | growing HLS playlist and segments |
+| GET | `/api/v1/server/stats` | implemented (disk, ffmpeg, jobs, worker heartbeat, Real-Debrid user, catalog error) |
+| GET | `/api/v1/server/activity` | in-memory ring buffer (last 500 client/server events) |
+| POST | `/api/v1/client/events` | TV play/session/player errors |
+| WS | `/ws` | `job.progress`, `job.ready`, `job.finished`, `library.changed`, `activity` |
+
+## Library item extras
+
+List and detail responses include `matchStatus` (`matched` / `unmatched` / `ignored` / `suggested`). Catalog headings (`tagline`, `plot`, `imdbId`, rating, genres) are only set when identity is **explicit**: `coog.json` with an IMDB id, a Kodi NFO, or `tt…` in the path. Title search is never applied. Matched titles also get `logoUrl`. Artwork is stored beside the file (`poster.jpg`, `fanart.jpg`, `logo.png`) so it is not re-fetched after a cache wipe.
 
 ## Playback session
 
@@ -37,6 +60,8 @@ Request:
 }
 ```
 
+Pass `jobId` (and omit `mediaId` if the file is not in the library yet) for an in-progress acquire. Pass `imdbId` (and optional `kind`, `season`, `episode`, `title`) to play a catalog title: if it is already on disk, you get a **direct** session; otherwise the server queues a Real-Debrid job and returns **409** with `jobId` while it keeps buffering. When the job is `ready` or still downloading with HLS, the session `method` is `progressive` and `url` points at `…/jobs/{id}/progressive/index.m3u8`. After the job finishes, the same `jobId` returns a **direct** session on the new library item unless `saveToLibrary` is off.
+
 Success:
 
 ```json
@@ -45,11 +70,40 @@ Success:
   "method": "direct",
   "url": "http://host:8090/api/v1/media/{id}/stream",
   "mediaId": "…",
+  "jobId": "",
   "expectedDurationMs": 7200000,
   "bufferedMs": 7200000
 }
 ```
 
-If the profile cannot direct-play, the server returns **409** with `method: transcode` and an error string. Remux/transcode are not implemented yet.
+If the profile cannot direct-play a finished file, the server returns **409** with `method: transcode` and an error string. Remux/transcode are not implemented yet.
 
 Concurrent transcode cap (Phase 6, not enforced): **2**.
+
+## Acquire jobs
+
+`POST /api/v1/jobs`:
+
+```json
+{ "type": "ytdlp", "url": "https://…" }
+```
+
+Debrid from the TV source picker:
+
+```json
+{ "type": "debrid", "imdbId": "tt123", "infoHash": "…", "kind": "movie", "title": "…" }
+```
+
+When `infoHash` is set the worker resolves that torrent through Real-Debrid and skips Torrentio auto-pick. An active job with the same hash is reused.
+
+Statuses: `queued`, `downloading`, `ready`, `finished`, `error`, `cancelled`. `ready` means Media3 can open the progressive HLS URL while the download continues. Failed jobs include `error` plus a short `logTail` (last stderr from yt-dlp/ffmpeg). Real-Debrid tokens are redacted in activity logs and job URLs. `coog-worker` must be running and `yt-dlp` must be on `PATH`.
+
+`PUT /api/v1/settings/streaming` accepts `torrentioProviders` and `excludeQualities` arrays in addition to the save-to-library / binge / Real-Debrid token fields.
+
+## Catalog extras
+
+Home/search/title items may include `inLibrary`, `mediaId` (library id when overlapping), `releasePhase` (`coming_soon` | `theatrical` | `released`), `tmdbId`, and `cast` (`name`, `character`, `profileUrl`, `tmdbId`). Remote Play is expected to open `GET /catalog/streams` rather than auto-queue a debrid job. `coming_soon` titles can still open details; remote Play is blocked unless a local file exists.
+
+`GET /api/v1/catalog/streams` returns `{ items: [{ infoHash, title, quality, cached, seeders, size, sizeLabel, source, provider }] }` sorted cached-first, capped at 40.
+
+Activity events: `{ ts, level, source, type, message, mediaId?, jobId?, sessionId? }` with `source` = `api` | `worker` | `tv`.

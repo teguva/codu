@@ -45,6 +45,31 @@ func (p *Prober) Version(ctx context.Context) string {
 	return strings.TrimSpace(line)
 }
 
+func (p *Prober) Duration(ctx context.Context, src string) (int64, error) {
+	if strings.TrimSpace(src) == "" {
+		return 0, fmt.Errorf("empty probe source")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, p.ffprobe,
+		"-v", "quiet",
+		"-probesize", "4M",
+		"-analyzeduration", "4M",
+		"-show_entries", "format=duration",
+		"-of", "csv=p=0",
+		src,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	secs, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || secs <= 0 {
+		return 0, fmt.Errorf("no duration")
+	}
+	return int64(secs * 1000), nil
+}
+
 func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

@@ -18,17 +18,19 @@ val CoogFocus = Color(0xFFFFFFFF)
 val CoogText = Color.White
 val CoogTextSecondary = Color.White.copy(alpha = 0.72f)
 val CoogTextMuted = Color.White.copy(alpha = 0.48f)
+val CoogCached = Color(0xFF8EE4A8)
+val CoogDanger = Color(0xFFFF8B8B)
 
 object CoogType {
     val heroTitle = TextStyle(
         color = CoogText,
-        fontSize = 36.sp,
+        fontSize = 42.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = (-0.8).sp,
-        lineHeight = 38.sp,
+        lineHeight = 46.sp,
     )
     val heroTagline = TextStyle(
-        color = Color.White.copy(alpha = 0.82f),
+        color = Color.White.copy(alpha = 0.86f),
         fontSize = 16.sp,
         fontWeight = FontWeight.Medium,
         lineHeight = 22.sp,
@@ -40,14 +42,16 @@ object CoogType {
         lineHeight = 22.sp,
     )
     val chip = TextStyle(
-        color = Color.White.copy(alpha = 0.9f),
-        fontSize = 13.sp,
+        color = Color.White.copy(alpha = 0.92f),
+        fontSize = 12.sp,
         fontWeight = FontWeight.Medium,
+        letterSpacing = 0.2.sp,
     )
     val shelfTitle = TextStyle(
-        color = CoogTextMuted,
-        fontSize = 14.sp,
+        color = Color.White.copy(alpha = 0.86f),
+        fontSize = 13.sp,
         fontWeight = FontWeight.Medium,
+        letterSpacing = 0.1.sp,
     )
     val cardTitle = TextStyle(
         color = CoogText,
@@ -59,11 +63,14 @@ object CoogType {
         color = CoogTextMuted,
         fontSize = 12.sp,
         fontWeight = FontWeight.Normal,
+        lineHeight = 14.sp,
     )
-    val clock = TextStyle(
-        color = CoogTextSecondary,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Medium,
+    val screenTitle = TextStyle(
+        color = CoogText,
+        fontSize = 28.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.4).sp,
+        lineHeight = 32.sp,
     )
 }
 
@@ -77,7 +84,7 @@ private val CoogDark = darkColorScheme(
     onSurfaceVariant = Color(0xB8FFFFFF),
     background = CoogBgDeep,
     onBackground = CoogOnSurface,
-    error = Color(0xFFFF8B8B),
+    error = CoogDanger,
     border = Color(0x1FFFFFFF),
 )
 

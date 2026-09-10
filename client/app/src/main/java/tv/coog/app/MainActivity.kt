@@ -1,22 +1,43 @@
 package tv.coog.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import kotlinx.coroutines.runBlocking
+import tv.coog.app.data.SettingsRepository
 import tv.coog.app.ui.CoogApp
 import tv.coog.app.ui.theme.CoogTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyLaunchExtras()
         enableEdgeToEdge()
         setContent {
             CoogTheme {
                 CoogApp()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyLaunchExtras()
+    }
+
+    private fun applyLaunchExtras() {
+        val url = intent.getStringExtra(EXTRA_SERVER_URL)?.trim().orEmpty()
+        val token = intent.getStringExtra(EXTRA_TOKEN)?.trim().orEmpty()
+        if (url.isBlank() && token.isBlank()) return
+        val settings = SettingsRepository(applicationContext)
+        runBlocking {
+            if (url.isNotBlank()) settings.setServerUrl(url)
+            if (token.isNotBlank()) settings.setToken(token)
         }
     }
 
@@ -61,5 +82,10 @@ class MainActivity : ComponentActivity() {
             event.flags,
             event.source or InputDevice.SOURCE_DPAD,
         )
+    }
+
+    companion object {
+        const val EXTRA_SERVER_URL = "server_url"
+        const val EXTRA_TOKEN = "token"
     }
 }

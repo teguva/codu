@@ -17,6 +17,9 @@ func Bearer(token string) func(http.Handler) http.Handler {
 			}
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			got = strings.TrimSpace(got)
+			if got == "" {
+				got = strings.TrimSpace(r.URL.Query().Get("token"))
+			}
 			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return

@@ -25,7 +25,7 @@ else
   UNIT_DIR="${UNIT_DIR:-$HOME/.config/systemd/user}"
   ENV_DIR="${ENV_DIR:-$HOME/.config/coog}"
   API_UNIT="$ROOT/deploy/systemd/coog-api.user.service"
-  WORKER_UNIT="$ROOT/deploy/systemd/coog-worker.service"
+  WORKER_UNIT="$ROOT/deploy/systemd/coog-worker.user.service"
 fi
 
 export PATH="${HOME}/.local/go/bin:/usr/local/go/bin:${PATH}"
@@ -46,8 +46,8 @@ fi
 
 if [[ "$MODE" == "system" ]]; then
   systemctl daemon-reload
-  echo "Installed $PREFIX/bin/coog-api. Enable with: sudo systemctl enable --now coog-api"
+  echo "Installed $PREFIX/bin/coog-api and coog-worker. Enable with: sudo systemctl enable --now coog-api coog-worker"
 else
   systemctl --user daemon-reload
-  echo "Installed $PREFIX/bin/coog-api. Enable with: systemctl --user enable --now coog-api"
+  echo "Installed $PREFIX/bin/coog-api and coog-worker. Enable with: systemctl --user enable --now coog-api coog-worker"
 fi

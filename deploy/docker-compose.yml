@@ -17,5 +17,23 @@ services:
       - coog-data:/data
     restart: unless-stopped
 
+  worker:
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    entrypoint: ["/usr/local/bin/coog-worker"]
+    environment:
+      COOG_LIBRARY_PATH: /library
+      COOG_DATA_PATH: /data
+      COOG_FFMPEG: ffmpeg
+      COOG_FFPROBE: ffprobe
+      COOG_YTDLP: yt-dlp
+    volumes:
+      - ${COOG_LIBRARY_PATH:-${HOME}/Videos}:/library
+      - coog-data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   coog-data:

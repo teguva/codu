@@ -4,13 +4,13 @@ Google TV client + Linux media server + Svelte admin. Jellyfin-style split: the 
 
 Predecessor: [`linux-tv-interface`](https://github.com/) (Debian kiosk). That repo is a **feature reference**, not the runtime. Coog does not ship Qt, Sway, or embedded mpv on the TV.
 
-**Play while downloading is a product requirement** (Phase 5). This tree currently implements Phases 0–2 and the start of Phase 3: native API, library scan, HTTP range streaming, direct-play sessions, admin, and a Compose for TV app with ExoPlayer.
+**Play while downloading is a product requirement** (Phase 5). Home shows trending movies/series (TMDB or Cinemeta) plus local library rows. Remote titles stream through Real-Debrid + Torrentio; the worker keeps buffering after the TV leaves and saves into `Videos/` unless admin settings say otherwise.
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `server/` | Go module — `coog-api` (and placeholder `coog-worker`) |
+| `server/` | Go module — `coog-api` and `coog-worker` (yt-dlp sidecar) |
 | `admin/` | Vite + Svelte 5 ops UI |
 | `client/` | Android TV / Google TV app (`tv.coog.app`) |
 | `deploy/` | systemd units, `install-linux.sh`, optional Compose |
@@ -19,7 +19,7 @@ Predecessor: [`linux-tv-interface`](https://github.com/) (Debian kiosk). That re
 
 ## Native quick start (no Docker)
 
-Needs: Go 1.24+, FFmpeg/ffprobe on `PATH`.
+Needs: Go 1.24+, FFmpeg/ffprobe on `PATH`. Acquire jobs also need `yt-dlp` on `PATH` and a running `coog-worker`.
 
 ```bash
 # API
@@ -28,6 +28,7 @@ export COOG_DATA_PATH="$HOME/.local/share/coog"
 # export COOG_AUTH_TOKEN="change-me"      # optional in v1
 cd server
 go run ./cmd/coog-api
+# another terminal: go run ./cmd/coog-worker
 # GET http://127.0.0.1:8090/health
 ```
 
@@ -53,7 +54,7 @@ Install as a user systemd service:
 
 ```bash
 ./deploy/install-linux.sh
-systemctl --user enable --now coog-api
+systemctl --user enable --now coog-api coog-worker
 ```
 
 ## Docker Compose (optional)
@@ -88,11 +89,13 @@ On the emulator, the default server URL is `http://10.0.2.2:8090`. On a TCL / Go
 |----------|---------|---------|
 | `COOG_LISTEN` | `:8090` | HTTP bind |
 | `COOG_LIBRARY_PATH` | `~/Videos` | Library root (`Movies/`, `Series/`) |
-| `COOG_DATA_PATH` | `~/.local/share/coog` | SQLite + future job state |
+| `COOG_DATA_PATH` | `~/.local/share/coog` | SQLite, artwork cache, job work dirs |
 | `COOG_FFMPEG` | `ffmpeg` | Binary on PATH or absolute |
 | `COOG_FFPROBE` | `ffprobe` | Probe on ingest |
+| `COOG_YTDLP` | `yt-dlp` | Worker acquire binary |
 | `COOG_AUTH_TOKEN` | empty (open) | Shared bearer token for `/api/*` |
 | `COOG_ADMIN_DIR` | empty | Serve a built admin SPA from this directory |
+| `COOG_TMDB_API_KEY` | empty | Optional TMDB overlay after IMDB/Cinemeta |
 
 `GET /health` is always unauthenticated.
 
@@ -101,14 +104,15 @@ On the emulator, the default server URL is `http://10.0.2.2:8090`. On a TCL / Go
 1. **direct** — HTTP Range on the original file (implemented).
 2. **remux** — stream-copy to fMP4/HLS (stub; API returns a clear error).
 3. **transcode** — last resort, cap later (documented as 2 concurrent).
-4. **progressive** — in-progress downloads as growing HLS for Media3 (**Phase 5**, required).
+4. **progressive** — in-progress yt-dlp jobs as growing HLS for Media3 (implemented). Real-Debrid and torrents are later.
+
+Library JSON includes `imdbId`, `tagline`, `plot`, `genres`, `rating`, `posterUrl`, and `backdropUrl`. Artwork: `GET /api/v1/media/{id}/poster` and `/backdrop` (`/artwork` aliases backdrop).
 
 ## What is not done yet
 
-- Acquire jobs (yt-dlp / Real-Debrid / torrents)
-- Play-while-downloading on ExoPlayer
+- Real-Debrid and torrent acquire
 - Remux/transcode pipeline
-- TMDB / posters / next-episode
+- Search, continue watching, next-episode, enqueue-from-TV
 
 See [docs/HANDOFF.md](docs/HANDOFF.md) for the full plan and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the condensed map.
 

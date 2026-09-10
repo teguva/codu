@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type Config struct {
 	Listen      string
@@ -18,6 +18,7 @@ type Config struct {
 	AuthToken   string
 	AdminDir    string
 	TMDBKey     string
+	YTDLP       string
 }
 
 func FromEnv() Config {
@@ -34,6 +35,7 @@ func FromEnv() Config {
 		AuthToken:   os.Getenv("COOG_AUTH_TOKEN"),
 		AdminDir:    os.Getenv("COOG_ADMIN_DIR"),
 		TMDBKey:     firstNonEmpty(env("COOG_TMDB_API_KEY", os.Getenv("TMDB_API_KEY")), tmdbKeyFromDisk(home)),
+		YTDLP:       env("COOG_YTDLP", "yt-dlp"),
 	}
 }
 

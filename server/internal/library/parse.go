@@ -73,19 +73,36 @@ func ParseRelative(rel string) Parsed {
 	root := strings.ToLower(parts[0])
 	switch root {
 	case "movies":
-		p.Kind = "movie"
-		p.Title, p.Year = parseMovie(parts[1:])
+		rest := parts[1:]
+		if looksLikeSeriesPath(rest) {
+			p.Kind = "episode"
+			p.ShowTitle, p.Title, p.Season, p.Episode, p.Year = parseSeries(rest)
+		} else {
+			p.Kind = "movie"
+			p.Title, p.Year = parseMovie(rest)
+		}
 	case "series":
 		p.Kind = "episode"
 		p.ShowTitle, p.Title, p.Season, p.Episode, p.Year = parseSeries(parts[1:])
 	default:
-		if se := seRe.FindStringSubmatch(filepath.Base(rel)); len(se) == 3 {
+		if looksLikeSeriesPath(parts) {
 			p.Kind = "episode"
-			p.Season = atoi(se[1])
-			p.Episode = atoi(se[2])
+			p.ShowTitle, p.Title, p.Season, p.Episode, p.Year = parseSeries(parts)
 		}
 	}
 	return p
+}
+
+func looksLikeSeriesPath(parts []string) bool {
+	for _, part := range parts {
+		if seasonDirRe.MatchString(part) {
+			return true
+		}
+		if seRe.MatchString(part) || nxnRe.MatchString(part) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseMovie(parts []string) (title string, year int) {

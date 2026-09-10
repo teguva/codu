@@ -94,7 +94,38 @@ CREATE TABLE IF NOT EXISTS tokens (
   label TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'ytdlp',
+  url TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  progress REAL NOT NULL DEFAULT 0,
+  ready INTEGER NOT NULL DEFAULT 0,
+  expected_duration_ms INTEGER NOT NULL DEFAULT 0,
+  buffered_ms INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  work_dir TEXT NOT NULL DEFAULT '',
+  output_path TEXT NOT NULL DEFAULT '',
+  media_id TEXT NOT NULL DEFAULT '',
+  year INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
 `)
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN imdb_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN log_tail TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN info_hash TEXT NOT NULL DEFAULT ''`)
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS worker_heartbeat (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  updated_at INTEGER NOT NULL,
+  pid INTEGER NOT NULL DEFAULT 0
+);`)
 	return err
 }
 

@@ -37,7 +37,10 @@ func Negotiate(item store.MediaItem, caps *Capabilities) (Result, error) {
 		return Result{}, fmt.Errorf("transcode required: video codec %s is not in client profile", item.CodecVideo)
 	}
 	if awkwardAudio(item.CodecAudio) && !containsCodec(caps.AudioCodecs, item.CodecAudio) {
-		return Result{}, fmt.Errorf("transcode required: audio codec %s is not in client profile (remux/transcode not implemented yet)", item.CodecAudio)
+		return Result{
+			Method: MethodDirect,
+			Reason: "awkward audio " + item.CodecAudio + "; trying direct play (remux not implemented)",
+		}, nil
 	}
 	return Result{Method: MethodDirect, Reason: "client can direct play"}, nil
 }
