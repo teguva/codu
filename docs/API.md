@@ -10,13 +10,14 @@ Machine-readable: [`../openapi/coog.yaml`](../openapi/coog.yaml)
 | GET | `/health` | implemented |
 | GET | `/api/v1/library` | implemented (includes metadata + artwork URLs) |
 | GET | `/api/v1/library/{id}` | implemented |
+| DELETE | `/api/v1/library/{id}` | implemented (deletes the file, stem sidecars, and an empty movie folder; `?scope=series` on an episode removes the show folder) |
 | POST | `/api/v1/library/rescan` | implemented |
 | GET | `/api/v1/media/{id}/stream` | implemented (HTTP Range) |
 | GET | `/api/v1/media/{id}/poster` | implemented |
 | GET | `/api/v1/media/{id}/backdrop` | implemented |
 | GET | `/api/v1/media/{id}/logo` | implemented (sidecar `logo.png` / clearlogo, else matched Metahub/Cinemeta) |
 | GET | `/api/v1/media/{id}/artwork` | implemented (backdrop alias) |
-| GET | `/api/v1/media/{id}/trailer` | implemented when a sidecar or library trailer exists |
+| GET | `/api/v1/media/{id}/trailer` | implemented (sidecar, library `Trailers/` by IMDB, else TMDB YouTube via yt-dlp; catalog ids `catalog:tt…` accepted) |
 | POST | `/api/v1/playback/sessions` | implemented (`direct` or `progressive`) |
 | GET | `/api/v1/catalog/home` | implemented (TMDB trending, Cinemeta fallback; overlapping library titles stay and set `inLibrary`) |
 | GET | `/api/v1/catalog/series/{imdb}` | implemented (episodes, cast, local episode flags) |
@@ -41,7 +42,9 @@ Machine-readable: [`../openapi/coog.yaml`](../openapi/coog.yaml)
 
 ## Library item extras
 
-List and detail responses include `matchStatus` (`matched` / `unmatched` / `ignored` / `suggested`). Catalog headings (`tagline`, `plot`, `imdbId`, rating, genres) are only set when identity is **explicit**: `coog.json` with an IMDB id, a Kodi NFO, or `tt…` in the path. Title search is never applied. Matched titles also get `logoUrl`. Artwork is stored beside the file (`poster.jpg`, `fanart.jpg`, `logo.png`) so it is not re-fetched after a cache wipe.
+List and detail responses include `matchStatus` (`matched` / `unmatched` / `ignored` / `suggested`). Catalog headings (`tagline`, `plot`, `imdbId`, rating, genres) are only set when identity is **explicit**: `coog.json` with an IMDB id, a Kodi NFO, or `tt…` in the path. Title search is never applied. Matched titles also get `logoUrl`, plus `cast`, `director`, `runtimeMinutes`, `certification`, `country`, and `tmdbId` when enrich has them. Artwork is stored beside the file (`poster.jpg`, `fanart.jpg`, `logo.png`) so it is not re-fetched after a cache wipe.
+
+`DELETE /api/v1/library/{id}` removes the video and stem sidecars. Movies also drop the movie folder when it becomes empty. Episode deletes never wipe show artwork; pass `?scope=series` to delete the show folder. Paths outside `COOG_LIBRARY_PATH` return 403. The admin Library detail confirms before calling this.
 
 ## Playback session
 

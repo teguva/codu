@@ -15,11 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,12 +42,8 @@ fun DownloadsScreen(
 ) {
     val firstFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
     val railFocus = LocalRailFocus.current
-    val navBarFocused = LocalNavBarFocused.current
     val rows = remember(jobs) {
         jobs.filter { !it.isFinished() }
-    }
-    LaunchedEffect(rows.firstOrNull()?.id, navBarFocused) {
-        if (!navBarFocused && rows.isNotEmpty()) runCatching { firstFocus.requestFocus() }
     }
     Column(
         modifier = Modifier

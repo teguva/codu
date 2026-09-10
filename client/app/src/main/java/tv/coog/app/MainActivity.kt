@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.WindowManager
+import android.widget.EditText
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,6 +17,10 @@ import tv.coog.app.ui.theme.CoogTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN,
+        )
         applyLaunchExtras()
         enableEdgeToEdge()
         setContent {
@@ -43,8 +49,12 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val mapped = mapToDpad(event) ?: event
-        if (isDpad(mapped.keyCode) && currentFocus?.isInTouchMode == true) {
-            currentFocus?.isFocusableInTouchMode = false
+        val focus = currentFocus
+        if (focus is EditText) {
+            return super.dispatchKeyEvent(mapped)
+        }
+        if (isDpad(mapped.keyCode) && focus?.isInTouchMode == true) {
+            focus.isFocusableInTouchMode = false
         }
         return super.dispatchKeyEvent(mapped)
     }

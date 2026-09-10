@@ -75,6 +75,13 @@ class CoogApi(
         }
     }
 
+    suspend fun trailerExists(id: String): Boolean = withContext(Dispatchers.IO) {
+        val req = request("/api/v1/media/$id/trailer").head().build()
+        client.newCall(req).execute().use { resp ->
+            resp.code != 404 && resp.code < 500
+        }
+    }
+
     suspend fun catalogHome(): CatalogHomeResponse = get("/api/v1/catalog/home")
 
     suspend fun catalogShow(imdbId: String): CatalogShowResponse = get("/api/v1/catalog/series/$imdbId")

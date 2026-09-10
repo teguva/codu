@@ -35,6 +35,8 @@
   let rdToken = $state('');
   let streamBusy = $state(false);
   let streamError = $state('');
+  let deleting = $state(false);
+  let deleteError = $state('');
 
   const headers = () => {
     const h = { Accept: 'application/json' };
@@ -150,6 +152,31 @@
   async function openItem(id) {
     const res = await fetch(`/api/v1/library/${id}`, { headers: headers() });
     selected = await res.json();
+    deleteError = '';
+  }
+
+  async function removeSelected(scope) {
+    if (!selected?.id || deleting) return;
+    const series = scope === 'series';
+    const msg = series
+      ? `Remove the entire series folder and every episode file for “${selected.showTitle || selected.title}”? This cannot be undone.`
+      : selected.kind === 'episode'
+        ? `Delete the episode file “${selected.title}”? Show artwork is kept.`
+        : `Delete “${selected.title}” from disk, including its folder and metadata? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    deleting = true;
+    deleteError = '';
+    try {
+      const q = series ? '?scope=series' : '';
+      const res = await fetch(`/api/v1/library/${selected.id}${q}`, { method: 'DELETE', headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      selected = null;
+      await refreshLibrary();
+    } catch (err) {
+      deleteError = String(err);
+    } finally {
+      deleting = false;
+    }
   }
 
   async function enqueue() {
@@ -568,6 +595,17 @@
           <p>video {selected.codecVideo || '—'} · audio {selected.codecAudio || '—'} · {selected.contentType || '—'}</p>
           {#if selected.probeError}<p class="error">{selected.probeError}</p>{/if}
           <p><a href={selected.streamUrl || `/api/v1/media/${selected.id}/stream`}>playable stream</a></p>
+          {#if deleteError}<p class="error">{deleteError}</p>{/if}
+          <div class="toolbar">
+            <button class="ghost danger" onclick={() => removeSelected()} disabled={deleting}>
+              {selected.kind === 'episode' ? 'Delete episode file' : 'Remove from library'}
+            </button>
+            {#if selected.kind === 'episode'}
+              <button class="ghost danger" onclick={() => removeSelected('series')} disabled={deleting}>
+                Remove entire series
+              </button>
+            {/if}
+          </div>
         </section>
       {/if}
     {/if}

@@ -4,14 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -20,12 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
-import kotlinx.coroutines.delay
 import tv.coog.app.ui.theme.CoogBgDeep
 import tv.coog.app.ui.theme.CoogType
 import tv.coog.app.update.UpdateUiState
@@ -47,12 +41,6 @@ fun SettingsScreen(
     var sourceUrl by remember { mutableStateOf("") }
     val firstFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
     val railFocus = LocalRailFocus.current
-    val navBarFocused = LocalNavBarFocused.current
-    LaunchedEffect(navBarFocused) {
-        if (navBarFocused) return@LaunchedEffect
-        delay(80)
-        runCatching { firstFocus.requestFocus() }
-    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -68,15 +56,17 @@ fun SettingsScreen(
             modifier = Modifier.widthIn(max = 900.dp),
         )
         FieldLabel("Server URL")
-        SettingField(
+        TvTextField(
             value = url,
             onValueChange = { url = it },
+            placeholder = "http://192.168.1.10:8090",
+            uri = true,
             modifier = Modifier
                 .focusRequester(firstFocus)
                 .then(if (railFocus != null) Modifier.focusProperties { up = railFocus } else Modifier),
         )
         FieldLabel("Bearer token")
-        SettingField(value = tok, onValueChange = { tok = it }, placeholder = "Optional unless the server requires one")
+        TvTextField(value = tok, onValueChange = { tok = it }, placeholder = "Optional unless the server requires one")
         WhitePill(label = "Save", onClick = { onSave(url, tok) })
 
         Text("Download", style = MaterialTheme.typography.titleMedium)
@@ -86,7 +76,7 @@ fun SettingsScreen(
             modifier = Modifier.widthIn(max = 900.dp),
         )
         FieldLabel("Source URL")
-        SettingField(value = sourceUrl, onValueChange = { sourceUrl = it }, placeholder = "https://…")
+        TvTextField(value = sourceUrl, onValueChange = { sourceUrl = it }, placeholder = "https://…", uri = true)
         queueMessage?.takeIf { it.isNotBlank() }?.let { message ->
             Text(message, style = CoogType.heroPlot, modifier = Modifier.widthIn(max = 900.dp))
         }
@@ -126,28 +116,4 @@ fun SettingsScreen(
 @Composable
 private fun FieldLabel(text: String) {
     Text(text, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
-
-@Composable
-private fun SettingField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String = "",
-    modifier: Modifier = Modifier,
-) {
-    Surface(onClick = {}, modifier = modifier.fillMaxWidth().widthIn(max = 900.dp)) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-            decorationBox = { inner ->
-                if (value.isEmpty() && placeholder.isNotBlank()) {
-                    Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                inner()
-            },
-            modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp).fillMaxWidth(),
-        )
-    }
 }

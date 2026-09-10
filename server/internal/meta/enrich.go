@@ -16,18 +16,23 @@ import (
 )
 
 type Info struct {
-	ImdbID         string   `json:"imdbId,omitempty"`
-	Tagline        string   `json:"tagline,omitempty"`
-	Plot           string   `json:"plot,omitempty"`
-	Genres         []string `json:"genres,omitempty"`
-	Rating         float64  `json:"rating,omitempty"`
-	Year           int      `json:"year,omitempty"`
-	PosterURL      string   `json:"posterUrl,omitempty"`
-	BackdropURL    string   `json:"backdropUrl,omitempty"`
-	LogoURL        string   `json:"logoUrl,omitempty"`
-	Source         string   `json:"source,omitempty"`
-	MatchStatus    string   `json:"matchStatus,omitempty"` // matched|unmatched|ignored|suggested
-	RuntimeMinutes int      `json:"runtimeMinutes,omitempty"`
+	ImdbID         string       `json:"imdbId,omitempty"`
+	Tagline        string       `json:"tagline,omitempty"`
+	Plot           string       `json:"plot,omitempty"`
+	Genres         []string     `json:"genres,omitempty"`
+	Rating         float64      `json:"rating,omitempty"`
+	Year           int          `json:"year,omitempty"`
+	PosterURL      string       `json:"posterUrl,omitempty"`
+	BackdropURL    string       `json:"backdropUrl,omitempty"`
+	LogoURL        string       `json:"logoUrl,omitempty"`
+	Source         string       `json:"source,omitempty"`
+	MatchStatus    string       `json:"matchStatus,omitempty"` // matched|unmatched|ignored|suggested
+	RuntimeMinutes int          `json:"runtimeMinutes,omitempty"`
+	Certification  string       `json:"certification,omitempty"`
+	Country        string       `json:"country,omitempty"`
+	TMDBID         int          `json:"tmdbId,omitempty"`
+	Cast           []CastMember `json:"cast,omitempty"`
+	Director       *CastMember  `json:"director,omitempty"`
 }
 
 type Enricher struct {
@@ -237,6 +242,17 @@ func (e *Enricher) readDisk(id string) (Info, bool) {
 		return Info{}, false
 	}
 	return info, true
+}
+
+func (e *Enricher) Drop(id string) {
+	if id == "" {
+		return
+	}
+	e.mu.Lock()
+	delete(e.mem, id)
+	e.mu.Unlock()
+	_ = os.Remove(e.cachePath(id))
+	e.invalidateArtwork(id)
 }
 
 func (e *Enricher) cachePath(id string) string {

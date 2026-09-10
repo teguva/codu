@@ -1,6 +1,7 @@
 package tv.coog.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +21,6 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -32,10 +32,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -46,10 +46,13 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tv.coog.app.R
 import androidx.compose.ui.zIndex
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
@@ -79,12 +82,13 @@ private val PillTabs = listOf(
 private val IconTabs = listOf(BrowseTab.Search, BrowseTab.Settings)
 private val RailOrder = PillTabs + IconTabs
 private val CircleBtn = Color.White.copy(alpha = 0.10f)
+/** Google TV launcher tab / search / profile control height at xhdpi. */
+private val NavItemHeight = 32.dp
+private val NavBarPadTop = 8.dp
+private val NavBarPadBottom = 6.dp
 
 @Composable
-fun topBarHeight(): Dp {
-    val h = LocalConfiguration.current.screenHeightDp
-    return (h * 0.092f).dp
-}
+fun topBarHeight(): Dp = NavBarPadTop + NavItemHeight + NavBarPadBottom
 
 @Composable
 fun AppShell(
@@ -99,7 +103,8 @@ fun AppShell(
     val railRequesters = remember { List(focusCount) { FocusRequester() } }
     val currentRail = railRequesters[RailOrder.indexOf(tab).coerceAtLeast(0)]
     val barHeight = topBarHeight()
-    val iconSize = (LocalConfiguration.current.screenHeightDp * 0.056f).dp
+    val itemHeight = NavItemHeight
+    val railFocusedState = rememberUpdatedState(railFocused)
 
     fun showTab(next: BrowseTab) {
         onTab(next)
@@ -125,8 +130,11 @@ fun AppShell(
     }
 
     LaunchedEffect(Unit) {
-        delay(120)
-        runCatching { contentFocus.requestFocus() }
+        repeat(40) {
+            delay(80)
+            if (railFocusedState.value) return@LaunchedEffect
+            if (runCatching { contentFocus.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+        }
     }
 
     Box(
@@ -148,7 +156,7 @@ fun AppShell(
                 .fillMaxWidth()
                 .height(barHeight)
                 .zIndex(2f)
-                .onFocusChanged { railFocused = it.hasFocus }
+                .onFocusChanged { if (it.hasFocus) railFocused = true }
                 .onPreviewKeyEvent { event ->
                     val dpad = event.key == Key.DirectionRight ||
                         event.key == Key.DirectionLeft ||
@@ -171,23 +179,20 @@ fun AppShell(
                     }
                     event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
                 }
-                .padding(start = catalogInset(), end = catalogInset(), top = 6.dp, bottom = 4.dp),
+                .padding(
+                    start = catalogInset(),
+                    end = catalogInset(),
+                    top = NavBarPadTop,
+                    bottom = NavBarPadBottom,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(iconSize)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(CircleBtn),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.LiveTv,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(iconSize * 0.52f),
-                )
-            }
+            Image(
+                painter = painterResource(R.drawable.ic_coog_logo),
+                contentDescription = "Coog",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(itemHeight),
+            )
             Spacer(Modifier.weight(1f))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -206,7 +211,7 @@ fun AppShell(
                             railIndex = index
                             showTab(value)
                         },
-                        height = iconSize,
+                        height = itemHeight,
                     )
                 }
             }
@@ -229,11 +234,11 @@ fun AppShell(
                             railIndex = index
                             showTab(value)
                         },
-                        size = iconSize,
+                        size = itemHeight,
                     )
                 }
                 NavAvatar(
-                    size = iconSize,
+                    size = itemHeight,
                     requester = railRequesters.last(),
                     onFocused = {
                         railFocused = true
@@ -303,8 +308,8 @@ private fun NavPill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Icon(icon, contentDescription = label, tint = LocalContentColor.current, modifier = Modifier.size(14.dp))
-            Text(label, color = LocalContentColor.current, fontSize = 12.sp)
+            Icon(icon, contentDescription = label, tint = LocalContentColor.current, modifier = Modifier.size(16.dp))
+            Text(label, color = LocalContentColor.current, fontSize = 14.sp)
         }
     }
 }

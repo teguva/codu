@@ -11,13 +11,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,7 +30,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,13 +63,6 @@ fun SearchScreen(
     var result by remember { mutableStateOf<tv.coog.app.data.SearchResponse?>(null) }
     val fieldFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
     val railFocus = LocalRailFocus.current
-    val navBarFocused = LocalNavBarFocused.current
-
-    LaunchedEffect(navBarFocused) {
-        if (navBarFocused) return@LaunchedEffect
-        delay(80)
-        runCatching { fieldFocus.requestFocus() }
-    }
     LaunchedEffect(query, server.url, server.token) {
         val q = query.trim()
         if (q.length < 2) {
@@ -114,37 +104,16 @@ fun SearchScreen(
             }
         }
         item {
-            Surface(
-                onClick = {},
-                colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color.White.copy(alpha = 0.08f),
-                    focusedContainerColor = Color.White.copy(alpha = 0.14f),
-                ),
-                modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp),
-            ) {
-                BasicTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    decorationBox = { inner ->
-                        Box(Modifier.fillMaxWidth()) {
-                            if (query.isEmpty()) {
-                                Text("Search titles or actors", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            inner()
-                        }
-                    },
-                    modifier = Modifier
-                        .padding(horizontal = 22.dp, vertical = 18.dp)
-                        .fillMaxWidth()
-                        .focusRequester(fieldFocus)
-                        .then(
-                            if (railFocus != null) Modifier.focusProperties { up = railFocus } else Modifier,
-                        ),
-                )
-            }
+            TvTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = "Search titles or actors",
+                modifier = Modifier
+                    .focusRequester(fieldFocus)
+                    .then(
+                        if (railFocus != null) Modifier.focusProperties { up = railFocus } else Modifier,
+                    ),
+            )
         }
         if (query.trim().length < 2 && result == null) {
             item {

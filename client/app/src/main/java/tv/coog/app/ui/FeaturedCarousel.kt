@@ -16,12 +16,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -32,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +43,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +64,7 @@ import androidx.media3.ui.compose.PlayerSurface
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import tv.coog.app.data.CoogApi
 import tv.coog.app.data.MediaItem
@@ -70,37 +74,63 @@ import androidx.media3.common.MediaItem as ExoMediaItem
 
 private val CardShape = RoundedCornerShape(16.dp)
 
+internal suspend fun catalogMatch(api: CoogApi, item: MediaItem): MediaItem? {
+    val query = item.headline().ifBlank { item.title }
+    if (query.isBlank()) return null
+    val result = runCatching { api.catalogSearch(query) }.getOrNull() ?: return null
+    val pool = if (item.kind == "series" || item.kind == "episode") result.series else result.movies
+    val want = normalizeBrowseTitle(query)
+    val hits = pool.filter { normalizeBrowseTitle(it.headline()) == want }
+    if (hits.isEmpty()) return null
+    val year = item.year
+    return hits.firstOrNull { year == 0 || it.year == 0 || it.year == year } ?: hits.singleOrNull()
+}
+
 @Composable
 fun FeaturedCarousel(
     items: List<MediaItem>,
-    onPlay: (MediaItem) -> Unit,
-    onMoreInfo: (MediaItem) -> Unit,
+    onOpen: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
+    label: String = "",
+    expanded: Boolean = true,
+    onRowFocused: () -> Unit = {},
     firstFocus: FocusRequester? = null,
+    exitUp: Boolean = false,
     insetStart: Dp = catalogInset(),
 ) {
     if (items.isEmpty()) return
     val server = LocalCoogServer.current
     val railFocus = LocalRailFocus.current
-    val listState = rememberLazyListState()
     var selected by remember(items.firstOrNull()?.id) { mutableIntStateOf(0) }
-    val itemFocus = remember(items.size, firstFocus) {
-        List(items.size) { i ->
-            if (i == 0 && firstFocus != null) firstFocus else FocusRequester()
-        }
-    }
-    val moreFocus = remember { FocusRequester() }
-    var extras by remember { mutableStateOf<Map<String, MediaItem>>(emptyMap()) }
     val index = selected.coerceIn(0, items.lastIndex)
+    val playFocus = firstFocus ?: remember { FocusRequester() }
+    val peekFocus = remember { List(2) { FocusRequester() } }
+    val navBarFocused = LocalNavBarFocused.current
+    val navBarFocusedState = rememberUpdatedState(navBarFocused)
+    var extras by remember { mutableStateOf<Map<String, MediaItem>>(emptyMap()) }
     val featured = extras[items[index].id] ?: items[index]
+    val window = remember(items, index) { items.subList(index, items.size) }
+    val rowItems = if (expanded) window else items
+    var restorePlayOnIndex by remember { mutableStateOf(false) }
+    var restorePlayOnExpand by remember { mutableStateOf(false) }
 
     LaunchedEffect(index) {
-        listState.animateScrollToItem(index)
+        val restore = restorePlayOnIndex
+        restorePlayOnIndex = true
+        if (!restore || !expanded) return@LaunchedEffect
         delay(40)
-        runCatching { itemFocus[index].requestFocus() }
+        if (navBarFocusedState.value) return@LaunchedEffect
+        runCatching { playFocus.requestFocus() }
     }
-    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, server.url, server.token) {
-        if (!featured.hasOfficialMeta()) return@LaunchedEffect
+    LaunchedEffect(expanded) {
+        val restore = restorePlayOnExpand
+        restorePlayOnExpand = true
+        if (!restore || !expanded) return@LaunchedEffect
+        delay(40)
+        if (navBarFocusedState.value) return@LaunchedEffect
+        runCatching { playFocus.requestFocus() }
+    }
+    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token) {
         delay(220)
         val api = CoogApi(server.url, server.token)
         val remote = when {
@@ -110,77 +140,101 @@ fun FeaturedCarousel(
             featured.tmdbId != 0 -> runCatching {
                 api.catalogTmdb(featured.kind.ifBlank { "movie" }, featured.tmdbId)
             }.getOrNull()
-            else -> null
+            else -> catalogMatch(api, featured)
         }
         if (remote != null) {
             extras = extras + (featured.id to mergeDetails(featured, remote))
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    fun moveLeft(): Boolean {
+        if (index <= 0) return false
+        selected = index - 1
+        return true
+    }
+
+    fun moveRight(): Boolean {
+        if (index >= items.lastIndex) return false
+        selected = index + 1
+        return true
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .onFocusChanged { if (it.hasFocus) onRowFocused() },
+    ) {
+        if (label.isNotBlank()) {
+            Text(
+                label,
+                style = CoogType.shelfTitle,
+                modifier = Modifier.padding(start = insetStart, bottom = 4.dp),
+            )
+        }
         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val gap = 12.dp
             val innerWidth = maxWidth - insetStart - insetStart
             val heightFromWidth = (innerWidth - gap * 2) * 9f / 28f
-            val rowHeight = minOf(maxHeight, heightFromWidth)
+            val rowHeight = if (expanded) minOf(maxHeight, heightFromWidth) else maxHeight
             val featuredWidth = rowHeight * 16f / 9f
             val peekWidth = rowHeight * 2f / 3f
-            val used = featuredWidth + peekWidth * 2 + gap * 2
-            val rowWidth = insetStart + used
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.CenterStart,
-            ) {
             LazyRow(
-                state = listState,
-                userScrollEnabled = false,
+                userScrollEnabled = !expanded,
                 horizontalArrangement = Arrangement.spacedBy(gap),
-                contentPadding = PaddingValues(start = insetStart),
+                contentPadding = PaddingValues(start = insetStart, end = insetStart),
                 modifier = Modifier
-                    .width(rowWidth)
+                    .fillMaxWidth()
                     .height(rowHeight)
                     .clipToBounds(),
             ) {
-                itemsIndexed(items, key = { _, item -> item.id }) { i, raw ->
+                itemsIndexed(rowItems, key = { _, item -> item.id }) { offset, raw ->
                     val item = extras[raw.id] ?: raw
-                    val active = i == index
-                    if (active) {
+                    val isBillboard = expanded && offset == 0
+                    if (isBillboard) {
                         BillboardCard(
                             item = item,
-                            onPlay = { onPlay(item) },
-                            onMoreInfo = { onMoreInfo(item) },
-                            playFocus = itemFocus[i],
-                            moreFocus = moreFocus,
-                            leftFocus = when {
-                                i > 0 -> itemFocus[i - 1]
-                                railFocus != null -> railFocus
-                                else -> null
-                            },
-                            moreRight = itemFocus.getOrNull(i + 1),
-                            upFocus = railFocus,
+                            onOpen = { onOpen(item) },
+                            playFocus = playFocus,
+                            upFocus = if (exitUp) railFocus else null,
+                            leftToRail = index == 0,
+                            railFocus = railFocus,
+                            onMoveLeft = ::moveLeft,
+                            onMoveRight = ::moveRight,
                             width = featuredWidth,
-                            page = index,
-                            pageCount = items.size.coerceAtMost(6),
+                            playTrailer = true,
                         )
                     } else {
+                        val collapsedIndex = if (expanded) index + offset else offset
+                        val usePlayFocus = !expanded && offset == index
                         PeekCard(
                             item = item,
                             width = peekWidth,
-                            modifier = Modifier
-                                .focusRequester(itemFocus[i])
-                                .onFocusChanged { if (it.isFocused) selected = i }
-                                .then(
-                                    if (railFocus != null && i == index + 1) {
-                                        Modifier.focusProperties { up = railFocus }
-                                    } else {
-                                        Modifier
-                                    },
-                                ),
-                            onClick = { selected = i },
+                            compact = !expanded,
+                            modifier =                                             Modifier
+                                                .then(
+                                                    when {
+                                                        usePlayFocus -> Modifier.focusRequester(playFocus)
+                                                        expanded && offset - 1 in peekFocus.indices -> {
+                                                            Modifier.focusRequester(peekFocus[offset - 1])
+                                                        }
+                                                        else -> Modifier
+                                                    },
+                                                )
+                                                .focusProperties { canFocus = !expanded }
+                                                .onFocusChanged {
+                                    if (it.isFocused) {
+                                        onRowFocused()
+                                        selected = collapsedIndex
+                                    }
+                                },
+                            onClick = {
+                                selected = collapsedIndex
+                                onRowFocused()
+                                if (!expanded) onOpen(item)
+                            },
                         )
                     }
                 }
-            }
             }
         }
     }
@@ -189,22 +243,19 @@ fun FeaturedCarousel(
 @Composable
 private fun BillboardCard(
     item: MediaItem,
-    onPlay: () -> Unit,
-    onMoreInfo: () -> Unit,
+    onOpen: () -> Unit,
     playFocus: FocusRequester,
-    moreFocus: FocusRequester,
-    leftFocus: FocusRequester?,
-    moreRight: FocusRequester?,
     upFocus: FocusRequester?,
+    leftToRail: Boolean,
+    railFocus: FocusRequester?,
+    onMoveLeft: () -> Boolean,
+    onMoveRight: () -> Boolean,
     width: Dp,
-    page: Int,
-    pageCount: Int,
+    playTrailer: Boolean,
 ) {
-    val server = LocalCoogServer.current
     val genres = item.heroGenres()
     val meta = item.heroMetaLine()
     val plot = item.heroDescription()
-    val trailerUrl = if (item.isLocal()) server.trailerUrl(item.playableId()) else ""
     Box(
         modifier = Modifier
             .width(width)
@@ -219,12 +270,8 @@ private fun BillboardCard(
             alignment = Alignment.Center,
             modifier = Modifier.fillMaxSize(),
         )
-        if (trailerUrl.isNotBlank()) {
-            MutedTrailer(
-                url = trailerUrl,
-                token = server.token,
-                modifier = Modifier.fillMaxSize(),
-            )
+        if (playTrailer) {
+            MutedTrailer(item = item, modifier = Modifier.fillMaxSize())
         }
         Box(
             modifier = Modifier
@@ -304,56 +351,31 @@ private fun BillboardCard(
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                WhitePill(
-                    label = "Play",
-                    icon = Icons.Filled.PlayArrow,
-                    onClick = onPlay,
-                    modifier = Modifier
-                        .focusRequester(playFocus)
-                        .then(
-                            if (leftFocus != null || upFocus != null) {
-                                Modifier.focusProperties {
-                                    if (leftFocus != null) left = leftFocus
-                                    right = moreFocus
-                                    if (upFocus != null) up = upFocus
-                                }
-                            } else {
-                                Modifier.focusProperties { right = moreFocus }
-                            },
-                        ),
-                )
-                GhostButton(
-                    label = "More Info",
-                    onClick = onMoreInfo,
-                    modifier = Modifier
-                        .focusRequester(moreFocus)
-                        .then(
-                            Modifier.focusProperties {
-                                left = playFocus
-                                if (moreRight != null) right = moreRight
-                                if (upFocus != null) up = upFocus
-                            },
-                        ),
-                )
-            }
-        }
-        if (pageCount > 1) {
-            Row(
+            WhitePill(
+                label = "Play",
+                icon = Icons.Filled.PlayArrow,
+                onClick = onOpen,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                repeat(pageCount) { i ->
-                    Box(
-                        modifier = Modifier
-                            .size(if (i == page) 7.dp else 6.dp)
-                            .clip(CircleShape)
-                            .background(if (i == page) Color.White else Color.White.copy(alpha = 0.35f)),
-                    )
-                }
-            }
+                    .focusRequester(playFocus)
+                    .onPreviewKeyEvent { event ->
+                        when (event.key) {
+                            Key.DirectionLeft -> {
+                                if (leftToRail) return@onPreviewKeyEvent false
+                                val handled = onMoveLeft()
+                                if (handled) event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp else false
+                            }
+                            Key.DirectionRight -> {
+                                val handled = onMoveRight()
+                                if (handled) event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp else false
+                            }
+                            else -> false
+                        }
+                    }
+                    .focusProperties {
+                        if (leftToRail && railFocus != null) left = railFocus
+                        if (upFocus != null) up = upFocus
+                    },
+            )
         }
     }
 }
@@ -364,6 +386,7 @@ private fun PeekCard(
     width: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
     val genres = item.heroGenres()
@@ -409,25 +432,27 @@ private fun PeekCard(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(12.dp),
+                    .padding(if (compact) 8.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(
-                    item.kindLabel().uppercase(),
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.1.sp,
-                )
+                if (!compact) {
+                    Text(
+                        item.kindLabel().uppercase(),
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.1.sp,
+                    )
+                }
                 Text(
                     item.headline(),
                     color = Color.White,
-                    fontSize = 16.sp,
+                    fontSize = if (compact) 12.sp else 16.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 2,
+                    maxLines = if (compact) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (item.rating > 0) {
+                if (!compact && item.rating > 0) {
                     Text(
                         "${(item.rating * 10).toInt()}% Match",
                         color = CoogCached,
@@ -435,7 +460,7 @@ private fun PeekCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                if (genres.isNotEmpty()) {
+                if (!compact && genres.isNotEmpty()) {
                     Text(
                         genres.joinToString("  •  "),
                         color = Color.White.copy(alpha = 0.72f),
@@ -451,18 +476,24 @@ private fun PeekCard(
 
 @Composable
 private fun MutedTrailer(
-    url: String,
-    token: String,
+    item: MediaItem,
     modifier: Modifier = Modifier,
 ) {
-    var start by remember(url) { mutableStateOf(false) }
-    LaunchedEffect(url) {
+    val server = LocalCoogServer.current
+    val mediaId = item.trailerMediaId()
+    val url = server.trailerUrl(mediaId)
+    var start by remember(mediaId) { mutableStateOf(false) }
+    LaunchedEffect(mediaId, server.url, server.token) {
         start = false
-        delay(1100)
-        start = true
+        val api = CoogApi(server.url, server.token)
+        val check = async {
+            runCatching { api.trailerExists(mediaId) }.getOrDefault(false)
+        }
+        delay(3_000)
+        start = check.await()
     }
-    if (start) {
-        TrailerPlayer(url = url, token = token, modifier = modifier)
+    if (start && url.isNotBlank()) {
+        TrailerPlayer(url = url, token = server.token, modifier = modifier)
     }
 }
 

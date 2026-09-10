@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"coog/internal/library"
 	"coog/internal/meta"
 	"coog/internal/probe"
 	"coog/internal/store"
@@ -84,40 +83,6 @@ func sidecarArt(item store.MediaItem, kind string) string {
 	default:
 		return probe.SidecarBackdrop(item.Path)
 	}
-}
-
-func (s *Server) handleTrailer(w http.ResponseWriter, r *http.Request) {
-	item, err := s.store.GetMedia(r.PathValue("id"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "media not found")
-		return
-	}
-	path := probe.SidecarTrailer(item.Path)
-	if path == "" {
-		info := s.meta.Ensure(r.Context(), item)
-		if meta.IdentityConfirmed(item.Path, info) {
-			path = probe.LibraryTrailer(s.cfg.LibraryPath, info.ImdbID)
-		}
-	}
-	if path == "" {
-		writeError(w, http.StatusNotFound, "no trailer")
-		return
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "trailer missing")
-		return
-	}
-	defer f.Close()
-	stat, err := f.Stat()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", library.ContentType(path))
-	w.Header().Set("Accept-Ranges", "bytes")
-	clampRangeForExoPlayer(r, stat.Size())
-	http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
 }
 
 func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind string) error {
@@ -208,6 +173,7 @@ func viewItem(item store.MediaItem, info meta.Info, origin string) map[string]an
 		}
 	} else {
 		matchStatus = "unmatched"
+		imdb = info.ImdbID
 	}
 	out := map[string]any{
 		"id":           item.ID,
@@ -239,6 +205,26 @@ func viewItem(item store.MediaItem, info meta.Info, origin string) map[string]an
 	}
 	if confirmed {
 		out["logoUrl"] = origin + "/api/v1/media/" + item.ID + "/logo"
+	}
+	if matchStatus != "ignored" && matchStatus != "suggested" {
+		if info.RuntimeMinutes > 0 {
+			out["runtimeMinutes"] = info.RuntimeMinutes
+		}
+		if info.Certification != "" {
+			out["certification"] = info.Certification
+		}
+		if info.Country != "" {
+			out["country"] = info.Country
+		}
+		if info.TMDBID != 0 {
+			out["tmdbId"] = info.TMDBID
+		}
+		if len(info.Cast) > 0 {
+			out["cast"] = info.Cast
+		}
+		if info.Director != nil {
+			out["director"] = info.Director
+		}
 	}
 	out["streamUrl"] = origin + "/api/v1/media/" + item.ID + "/stream"
 	probeError := ""

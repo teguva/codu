@@ -140,6 +140,28 @@ func (e *Enricher) overlayTMDB(ctx context.Context, kind string, info Info, titl
 	} else if !strings.Contains(info.Source, "tmdb") {
 		info.Source += "+tmdb"
 	}
+	if movie.ID != 0 {
+		info.TMDBID = movie.ID
+	}
+	if info.RuntimeMinutes == 0 {
+		if movie.Runtime > 0 {
+			info.RuntimeMinutes = movie.Runtime
+		} else if len(movie.EpisodeRunTime) > 0 {
+			info.RuntimeMinutes = movie.EpisodeRunTime[0]
+		}
+	}
+	if info.Country == "" {
+		info.Country = countryFromTMDB(movie)
+	}
+	if info.Certification == "" {
+		info.Certification = certificationFromTMDB(movie)
+	}
+	if info.Director == nil {
+		info.Director = directorFromTMDB(movie.Credits)
+	}
+	if len(info.Cast) == 0 {
+		info.Cast = creditsFromTMDB(movie.Credits)
+	}
 	return info
 }
 
@@ -400,4 +422,80 @@ func directorFromTMDB(credits tmdbCredits) *CastMember {
 		}
 	}
 	return nil
+}
+
+type tmdbVideo struct {
+	Key      string `json:"key"`
+	Site     string `json:"site"`
+	Type     string `json:"type"`
+	Official bool   `json:"official"`
+	Name     string `json:"name"`
+}
+
+func (e *Enricher) OfficialTrailer(ctx context.Context, kind, imdb string, tmdbID int) (string, error) {
+	if !e.tmdbEnabled() {
+		return "", fmt.Errorf("TMDB is not configured")
+	}
+	id := tmdbID
+	if id == 0 {
+		imdb = strings.TrimSpace(imdb)
+		if !strings.HasPrefix(imdb, "tt") {
+			return "", fmt.Errorf("imdb id required")
+		}
+		movie, err := e.tmdbFind(ctx, kind, imdb)
+		if err != nil || movie.ID == 0 {
+			return "", fmt.Errorf("title not found")
+		}
+		id = movie.ID
+	}
+	path := "movie"
+	if kind == "series" || kind == "episode" {
+		path = "tv"
+	}
+	u := fmt.Sprintf("https://api.themoviedb.org/3/%s/%d/videos?api_key=%s", path, id, url.QueryEscape(e.tmdbKey))
+	var wrap struct {
+		Results []tmdbVideo `json:"results"`
+	}
+	if err := e.getJSON(ctx, u, &wrap); err != nil {
+		return "", err
+	}
+	page := pickYouTubeTrailer(wrap.Results)
+	if page == "" {
+		return "", fmt.Errorf("no youtube trailer")
+	}
+	return page, nil
+}
+
+func pickYouTubeTrailer(videos []tmdbVideo) string {
+	score := func(v tmdbVideo) int {
+		if !strings.EqualFold(v.Site, "YouTube") || strings.TrimSpace(v.Key) == "" {
+			return 0
+		}
+		typ := strings.ToLower(strings.TrimSpace(v.Type))
+		n := 1
+		if typ == "trailer" {
+			n = 4
+		} else if typ == "teaser" {
+			n = 2
+		}
+		if v.Official {
+			n += 2
+		}
+		if strings.Contains(strings.ToLower(v.Name), "official") {
+			n++
+		}
+		return n
+	}
+	best := tmdbVideo{}
+	bestScore := 0
+	for _, v := range videos {
+		if s := score(v); s > bestScore {
+			best = v
+			bestScore = s
+		}
+	}
+	if bestScore == 0 {
+		return ""
+	}
+	return "https://www.youtube.com/watch?v=" + strings.TrimSpace(best.Key)
 }

@@ -9,15 +9,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import kotlinx.coroutines.delay
 import tv.coog.app.data.JobItem
 import tv.coog.app.data.MediaItem
 import tv.coog.app.data.PersonSummary
@@ -45,21 +47,18 @@ fun HomeScreen(
     val shows = remember(items) { items.showRows() }
     val folders = remember(items) { items.folderRows() }
     val firstFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
-    val navBarFocused = LocalNavBarFocused.current
-    val recommended = trendingMovies.ifEmpty { movies }
-    val continueWatching = movies.filter { it.isLocal() }.ifEmpty { movies }
+    val recommended = remember(trendingMovies, trendingSeries, movies) {
+        (trendingMovies + trendingSeries).ifEmpty { movies }
+    }
+    val continueWatching = remember(movies, recommended) {
+        overlayCatalog(movies.filter { it.isLocal() }.ifEmpty { movies }, recommended)
+    }
 
     val hasContent = when (tab) {
         BrowseTab.Series -> shows.isNotEmpty() || trendingSeries.isNotEmpty()
         BrowseTab.Folders -> folders.isNotEmpty()
         BrowseTab.Movies -> movies.isNotEmpty() || trendingMovies.isNotEmpty()
         else -> recommended.isNotEmpty() || shows.isNotEmpty() || continueWatching.isNotEmpty()
-    }
-    LaunchedEffect(tab, recommended.firstOrNull()?.id, movies.firstOrNull()?.id, shows.firstOrNull()?.name, error, loading, navBarFocused) {
-        if (!navBarFocused && !loading && error == null && hasContent) {
-            delay(80)
-            runCatching { firstFocus.requestFocus() }
-        }
     }
 
     val inset = catalogInset()
@@ -97,105 +96,61 @@ fun HomeScreen(
             }
         }
         else -> {
-            if (tab == BrowseTab.Home) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(CoogBgDeep)
-                        .padding(top = topBarHeight(), bottom = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    if (recommended.isNotEmpty()) {
-                        FeaturedCarousel(
-                            items = recommended,
-                            onPlay = onPlay,
-                            onMoreInfo = onOpenMovie,
-                            firstFocus = firstFocus,
-                            insetStart = inset,
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
-                        )
-                    }
-                    if (continueWatching.isNotEmpty()) {
-                        CatalogRow(
-                            label = "Continue watching",
-                            items = continueWatching,
-                            onOpen = onOpenMovie,
-                            jobs = jobs,
-                            insetStart = inset,
-                            featured = true,
-                            showBadge = false,
-                        )
+            val homeRows = remember(recommended, continueWatching) {
+                buildList {
+                    if (recommended.isNotEmpty()) add("Recommended for you" to recommended)
+                    if (continueWatching.isNotEmpty()) add("Continue watching" to continueWatching)
+                }
+            }
+            val movieRows = remember(trendingMovies, movies) {
+                buildList {
+                    val library = overlayCatalog(movies, trendingMovies)
+                    if (library.isNotEmpty()) add("Movies" to library)
+                    else if (trendingMovies.isNotEmpty()) add("Recommended movies" to trendingMovies)
+                    if (library.isNotEmpty() && trendingMovies.isNotEmpty()) {
+                        add("Recommended movies" to trendingMovies)
                     }
                 }
-            } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(CoogBgDeep)
-                    .padding(top = topBarHeight())
-                    .focusRestorer(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 16.dp),
-            ) {
-                when (tab) {
-                    BrowseTab.Movies -> {
-                        val row = trendingMovies.ifEmpty { movies }
-                        item(key = "movies") {
-                            CatalogRow(
-                                label = if (trendingMovies.isNotEmpty()) "Recommended for you" else "Movies",
-                                items = row,
-                                onOpen = onOpenMovie,
-                                firstFocus = firstFocus,
-                                jobs = jobs,
-                                insetStart = inset,
-                                featured = true,
-                                exitUp = true,
-                            )
-                        }
-                        if (trendingMovies.isNotEmpty() && movies.isNotEmpty()) {
-                            item(key = "local-movies") {
-                                CatalogRow(
-                                    label = "In your library",
-                                    items = movies,
-                                    onOpen = onOpenMovie,
-                                    jobs = jobs,
-                                    insetStart = inset,
-                                    featured = true,
-                                )
-                            }
-                        }
+            }
+            val seriesRows = remember(trendingSeries, shows) {
+                buildList {
+                    val library = overlayCatalog(shows.map { it.asFeaturedItem() }, trendingSeries)
+                    if (library.isNotEmpty()) add("Series" to library)
+                    else if (trendingSeries.isNotEmpty()) add("Recommended series" to trendingSeries)
+                    if (library.isNotEmpty() && trendingSeries.isNotEmpty()) {
+                        add("Recommended series" to trendingSeries)
                     }
-                    BrowseTab.Series -> {
-                        if (trendingSeries.isNotEmpty()) {
-                            item(key = "trending-series") {
-                                CatalogRow(
-                                    label = "Recommended for you",
-                                    items = trendingSeries,
-                                    onOpen = onOpenMovie,
-                                    firstFocus = firstFocus,
-                                    jobs = jobs,
-                                    insetStart = inset,
-                                    featured = true,
-                                    exitUp = true,
-                                )
-                            }
-                        }
-                        if (shows.isNotEmpty()) {
-                            item(key = "local-series") {
-                                ShowCatalogRow(
-                                    label = if (trendingSeries.isEmpty()) "Series" else "In your library",
-                                    shows = shows,
-                                    onOpen = onOpenShow,
-                                    firstFocus = if (trendingSeries.isEmpty()) firstFocus else null,
-                                    jobs = jobs,
-                                    insetStart = inset,
-                                    featured = true,
-                                    exitUp = trendingSeries.isEmpty(),
-                                )
-                            }
-                        }
-                    }
-                    BrowseTab.Folders -> {
+                }
+            }
+            when (tab) {
+                BrowseTab.Home -> BillboardShelves(
+                    rows = homeRows,
+                    firstFocus = firstFocus,
+                    inset = inset,
+                    onOpen = onOpenMovie,
+                )
+                BrowseTab.Movies -> BillboardShelves(
+                    rows = movieRows,
+                    firstFocus = firstFocus,
+                    inset = inset,
+                    onOpen = onOpenMovie,
+                )
+                BrowseTab.Series -> BillboardShelves(
+                    rows = seriesRows,
+                    firstFocus = firstFocus,
+                    inset = inset,
+                    onOpen = onOpenMovie,
+                )
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(CoogBgDeep)
+                            .padding(top = topBarHeight())
+                            .focusRestorer(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(bottom = 16.dp),
+                    ) {
                         item(key = "folders") {
                             FolderCatalogRow(
                                 label = "Library",
@@ -208,10 +163,40 @@ fun HomeScreen(
                             )
                         }
                     }
-                    else -> {}
                 }
             }
-            }
+        }
+    }
+}
+
+@Composable
+private fun BillboardShelves(
+    rows: List<Pair<String, List<MediaItem>>>,
+    firstFocus: FocusRequester,
+    inset: Dp,
+    onOpen: (MediaItem) -> Unit,
+) {
+    var focusedRow by remember { mutableIntStateOf(0) }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(CoogBgDeep)
+            .padding(top = topBarHeight(), bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        rows.forEachIndexed { i, (title, rowItems) ->
+            val weight = if (focusedRow == i) 1.18f else 0.60f
+            FeaturedCarousel(
+                items = rowItems,
+                label = title,
+                onOpen = onOpen,
+                expanded = focusedRow == i,
+                onRowFocused = { focusedRow = i },
+                firstFocus = if (i == 0) firstFocus else null,
+                exitUp = i == 0,
+                insetStart = inset,
+                modifier = Modifier.weight(weight).fillMaxWidth(),
+            )
         }
     }
 }

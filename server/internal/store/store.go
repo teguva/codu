@@ -201,6 +201,18 @@ func (s *Store) KnownByPath() (map[string]MediaItem, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) DeleteMedia(id string) error {
+	res, err := s.db.Exec(`DELETE FROM media_items WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) DeleteMissing(keepIDs []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {

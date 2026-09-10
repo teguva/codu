@@ -59,6 +59,8 @@ data class MediaItem(
         else -> id
     }
 
+    fun trailerMediaId(): String = if (isLocal()) playableId() else id
+
     fun playBlocked(): Boolean = kind != "series" && kind != "episode" &&
         releasePhase == "coming_soon" && !isLocal()
 }

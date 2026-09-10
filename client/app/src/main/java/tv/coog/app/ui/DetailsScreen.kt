@@ -70,16 +70,16 @@ fun MovieDetailsScreen(
     var similar by remember(item.id) { mutableStateOf<List<MediaItem>>(emptyList()) }
     val playFocus = remember { FocusRequester() }
     LaunchedEffect(item.id) { runCatching { playFocus.requestFocus() } }
-    LaunchedEffect(item.id, item.imdbId, item.tmdbId, server.url, server.token) {
+    LaunchedEffect(item.id, item.imdbId, item.tmdbId, item.title, server.url, server.token) {
         val api = CoogApi(server.url, server.token)
         val remote = when {
-            item.hasOfficialMeta() && item.imdbId.isNotBlank() -> runCatching {
+            item.imdbId.isNotBlank() -> runCatching {
                 api.catalogTitle(item.imdbId, item.kind.ifBlank { "movie" })
             }.getOrNull()
-            item.hasOfficialMeta() && item.tmdbId != 0 -> runCatching {
+            item.tmdbId != 0 -> runCatching {
                 api.catalogTmdb(item.kind.ifBlank { "movie" }, item.tmdbId)
             }.getOrNull()
-            else -> null
+            else -> catalogMatch(api, item)
         }
         if (remote != null) {
             details = mergeDetails(item, remote)
@@ -123,16 +123,16 @@ fun ShowDetailsScreen(
     val playFocus = remember { FocusRequester() }
     val playable = show.episodes.firstOrNull { it.isLocal() } ?: show.episodes.firstOrNull()
     LaunchedEffect(show.name) { runCatching { playFocus.requestFocus() } }
-    LaunchedEffect(show.name, show.cover.imdbId, show.cover.tmdbId, server.url, server.token) {
+    LaunchedEffect(show.name, show.cover.imdbId, show.cover.tmdbId, seed.title, server.url, server.token) {
         val api = CoogApi(server.url, server.token)
         val remote = when {
-            seed.hasOfficialMeta() && seed.imdbId.isNotBlank() -> runCatching {
+            seed.imdbId.isNotBlank() -> runCatching {
                 api.catalogTitle(seed.imdbId, "series")
             }.getOrNull()
-            seed.hasOfficialMeta() && seed.tmdbId != 0 -> runCatching {
+            seed.tmdbId != 0 -> runCatching {
                 api.catalogTmdb("series", seed.tmdbId)
             }.getOrNull()
-            else -> null
+            else -> catalogMatch(api, seed.copy(kind = "series"))
         }
         if (remote != null) {
             details = mergeDetails(seed, remote).copy(kind = "series", title = show.name.ifBlank { remote.title })
@@ -350,6 +350,10 @@ internal fun mergeDetails(local: MediaItem, remote: MediaItem): MediaItem = remo
     certification = remote.certification.ifBlank { local.certification },
     country = remote.country.ifBlank { local.country },
     director = if (remote.director.name.isNotBlank()) remote.director else local.director,
-    matchStatus = local.matchStatus.ifBlank { remote.matchStatus },
+    matchStatus = when {
+        remote.imdbId.isNotBlank() || remote.plot.isNotBlank() || remote.genres.isNotEmpty() ->
+            remote.matchStatus.ifBlank { "matched" }
+        else -> local.matchStatus.ifBlank { remote.matchStatus }
+    },
     logoUrl = remote.logoUrl.ifBlank { local.logoUrl },
 )

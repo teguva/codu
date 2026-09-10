@@ -196,6 +196,11 @@ data class ShowRow(
     val header: MediaItem? = null,
 ) {
     val cover: MediaItem get() = header ?: episodes.firstOrNull() ?: MediaItem(id = "", kind = "series", title = name)
+
+    fun asFeaturedItem(): MediaItem = cover.copy(
+        kind = "series",
+        title = name.ifBlank { cover.title },
+    )
     val subtitle: String get() {
         val seasons = episodes.map { it.season }.filter { it > 0 }.distinct().size
         val n = episodes.size
@@ -255,6 +260,23 @@ fun List<MediaItem>.movieItems(): List<MediaItem> {
         if (looksLikeEpisodeFile(item)) return@filter false
         showNames.none { matchesShowTitle(item.headline(), it) }
     }.sortedBy { it.headline().lowercase() }
+}
+
+fun overlayCatalog(local: List<MediaItem>, catalog: List<MediaItem>): List<MediaItem> {
+    if (local.isEmpty() || catalog.isEmpty()) return local
+    return local.map { item ->
+        if (item.imdbId.isNotBlank() || item.tmdbId != 0) item
+        else {
+            val want = normalizeBrowseTitle(item.headline())
+            if (want.isBlank()) item
+            else {
+                val hits = catalog.filter { normalizeBrowseTitle(it.headline()) == want }
+                val hit = hits.firstOrNull { item.year == 0 || it.year == 0 || it.year == item.year }
+                    ?: hits.singleOrNull()
+                if (hit != null) mergeDetails(item, hit) else item
+            }
+        }
+    }
 }
 
 fun matchesShowTitle(title: String, showName: String): Boolean {

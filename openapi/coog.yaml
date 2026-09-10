@@ -45,6 +45,27 @@ paths:
           description: Item
         "404":
           description: Not found
+    delete:
+      summary: Remove a library item from disk and SQLite
+      description: Deletes the video, stem sidecars, and an empty movie folder. Paths outside COOG_LIBRARY_PATH are refused. Pass scope=series on an episode to remove the show folder and every episode under it.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: scope
+          schema:
+            type: string
+            enum: [series]
+      responses:
+        "200":
+          description: Removed
+        "403":
+          description: Path outside the library root
+        "404":
+          description: Not found
   /api/v1/library/rescan:
     post:
       summary: Walk the library path and probe new/changed files
@@ -121,7 +142,7 @@ paths:
           description: JPEG
   /api/v1/media/{id}/trailer:
     get:
-      summary: Sidecar or library trailer stream
+      summary: Sidecar, library IMDB trailer, or TMDB YouTube via yt-dlp
       parameters:
         - in: path
           name: id

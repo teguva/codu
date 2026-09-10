@@ -51,6 +51,7 @@ func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *p
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/library", s.handleLibraryList)
 	mux.HandleFunc("GET /api/v1/library/{id}", s.handleLibraryGet)
+	mux.HandleFunc("DELETE /api/v1/library/{id}", s.handleLibraryDelete)
 	mux.HandleFunc("POST /api/v1/library/rescan", s.handleLibraryRescan)
 	mux.HandleFunc("GET /api/v1/media/{id}/stream", s.handleStream)
 	mux.HandleFunc("GET /api/v1/media/{id}/artwork", s.handleArtwork)
@@ -534,7 +535,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
