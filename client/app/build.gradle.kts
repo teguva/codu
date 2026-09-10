@@ -5,6 +5,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+import java.util.Properties
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+fun signingValue(property: String, env: String): String? {
+    System.getenv(env)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+    return keystoreProperties.getProperty(property)?.trim()?.takeIf { it.isNotEmpty() }
+}
+
 android {
     namespace = "tv.coog.app"
     compileSdk = 36
@@ -13,8 +26,26 @@ android {
         applicationId = "tv.coog.app"
         minSdk = 23 // Compose for TV is 21; Media3 HLS requires 23. Google TV is well above this.
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
+        buildConfigField("String", "GITHUB_REPO", "\"teguva/coog\"")
+    }
+
+    val releaseStoreFile = signingValue("storeFile", "COOG_STORE_FILE")
+    val canSignRelease = releaseStoreFile != null &&
+        signingValue("storePassword", "COOG_STORE_PASSWORD") != null &&
+        signingValue("keyAlias", "COOG_KEY_ALIAS") != null &&
+        signingValue("keyPassword", "COOG_KEY_PASSWORD") != null
+
+    signingConfigs {
+        if (canSignRelease) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = signingValue("storePassword", "COOG_STORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "COOG_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "COOG_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -24,6 +55,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (canSignRelease) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -36,6 +70,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -53,6 +88,8 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.7")
 
     implementation("androidx.tv:tv-material:1.1.0")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     implementation("androidx.media3:media3-exoplayer:1.11.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.0")

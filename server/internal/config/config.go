@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ type Config struct {
 	FFprobe     string
 	AuthToken   string
 	AdminDir    string
+	TMDBKey     string
 }
 
 func FromEnv() Config {
@@ -31,6 +33,7 @@ func FromEnv() Config {
 		FFprobe:     env("COOG_FFPROBE", "ffprobe"),
 		AuthToken:   os.Getenv("COOG_AUTH_TOKEN"),
 		AdminDir:    os.Getenv("COOG_ADMIN_DIR"),
+		TMDBKey:     firstNonEmpty(env("COOG_TMDB_API_KEY", os.Getenv("TMDB_API_KEY")), tmdbKeyFromDisk(home)),
 	}
 }
 
@@ -43,4 +46,37 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func tmdbKeyFromDisk(home string) string {
+	paths := []string{
+		filepath.Join(home, ".config", "coog", "tmdb.json"),
+		filepath.Join(home, ".config", "tv-shell", "tmdb.json"),
+	}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var wrap struct {
+			APIKey string `json:"apiKey"`
+			Key    string `json:"key"`
+		}
+		if json.Unmarshal(b, &wrap) != nil {
+			continue
+		}
+		if k := firstNonEmpty(wrap.APIKey, wrap.Key); k != "" {
+			return k
+		}
+	}
+	return ""
 }

@@ -74,6 +74,12 @@ cd client
 ./gradlew :app:assembleDebug
 ```
 
+### Install from GitHub Releases
+
+Each `v*` tag builds a signed APK (`coog-tv-vc{versionCode}-{versionName}.apk`) and attaches it to a [GitHub Release](https://github.com/teguva/coog/releases). Sideload that APK once (`adb install` or a TV downloader). After that, the app checks GitHub on launch; **Settings → Update** downloads the new APK and installs it. Android may ask once to allow Coog to install unknown apps, and may show a system confirm on each update.
+
+Studio debug builds are signed with a different key. Uninstall the debug build before switching to the GitHub APK, or in-place updates will fail.
+
 On the emulator, the default server URL is `http://10.0.2.2:8090`. On a TCL / Google TV on LAN, set **Settings → Server URL** to `http://<host-lan-ip>:8090`. If `COOG_AUTH_TOKEN` is set, paste the same token there.
 
 ## Environment

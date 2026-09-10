@@ -32,6 +32,13 @@ data class MediaItem(
     val hdr: String = "",
     @SerialName("durationMs") val durationMs: Long = 0,
     @SerialName("contentType") val contentType: String = "",
+    @SerialName("imdbId") val imdbId: String = "",
+    val tagline: String = "",
+    val plot: String = "",
+    val genres: List<String> = emptyList(),
+    val rating: Double = 0.0,
+    @SerialName("posterUrl") val posterUrl: String = "",
+    @SerialName("backdropUrl") val backdropUrl: String = "",
 )
 
 @Serializable

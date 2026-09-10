@@ -10,11 +10,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"coog/internal/auth"
 	"coog/internal/config"
 	"coog/internal/library"
+	"coog/internal/meta"
 	"coog/internal/playback"
 	"coog/internal/probe"
 	"coog/internal/store"
@@ -25,17 +28,22 @@ type Server struct {
 	store   *store.Store
 	scanner *library.Scanner
 	prober  *probe.Prober
+	meta    *meta.Enricher
 	http    *http.Server
 }
 
 func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *probe.Prober) *Server {
-	s := &Server{cfg: cfg, store: st, scanner: scanner, prober: prober}
+	s := &Server{cfg: cfg, store: st, scanner: scanner, prober: prober, meta: meta.New(cfg.DataPath, cfg.TMDBKey)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/library", s.handleLibraryList)
 	mux.HandleFunc("GET /api/v1/library/{id}", s.handleLibraryGet)
 	mux.HandleFunc("POST /api/v1/library/rescan", s.handleLibraryRescan)
 	mux.HandleFunc("GET /api/v1/media/{id}/stream", s.handleStream)
+	mux.HandleFunc("GET /api/v1/media/{id}/artwork", s.handleArtwork)
+	mux.HandleFunc("GET /api/v1/media/{id}/poster", s.handlePoster)
+	mux.HandleFunc("GET /api/v1/media/{id}/backdrop", s.handleBackdrop)
+	mux.HandleFunc("GET /api/v1/media/{id}/trailer", s.handleTrailer)
 	mux.HandleFunc("POST /api/v1/playback/sessions", s.handlePlaybackSession)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/v1/server/stats", s.handleStats)
@@ -99,7 +107,14 @@ func (s *Server) handleLibraryList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	s.meta.Warm(context.Background(), items)
+	origin := strings.TrimRight(publicURL(r, "/"), "/")
+	views := make([]any, 0, len(items))
+	for _, item := range items {
+		info, _ := s.meta.Peek(item.ID)
+		views = append(views, viewItem(item, info, origin))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views})
 }
 
 func (s *Server) handleLibraryGet(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +127,8 @@ func (s *Server) handleLibraryGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	info := s.meta.Ensure(r.Context(), item)
+	writeJSON(w, http.StatusOK, viewItem(item, info, strings.TrimRight(publicURL(r, "/"), "/")))
 }
 
 func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +136,9 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if items, err := s.store.ListMedia(); err == nil {
+		s.meta.Warm(context.Background(), items)
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -151,7 +170,36 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Accept-Ranges", "bytes")
+	slog.Info("media stream", "id", item.ID, "range", r.Header.Get("Range"), "size", info.Size())
+	clampRangeForExoPlayer(r, info.Size())
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+// ExoPlayer probes EOF with Range start == file size, which Go ServeContent maps to 416.
+// Media3 treats 416 as a hard source error, so clamp to the last byte instead.
+func clampRangeForExoPlayer(r *http.Request, size int64) {
+	if size <= 0 {
+		return
+	}
+	spec, ok := strings.CutPrefix(r.Header.Get("Range"), "bytes=")
+	if !ok || spec == "" || strings.Contains(spec, ",") {
+		return
+	}
+	startStr, _, found := strings.Cut(spec, "-")
+	if !found || startStr == "" {
+		return
+	}
+	start, err := strconv.ParseInt(startStr, 10, 64)
+	if err != nil {
+		return
+	}
+	if start > size {
+		return
+	}
+	if start == size {
+		last := size - 1
+		r.Header.Set("Range", "bytes="+strconv.FormatInt(last, 10)+"-"+strconv.FormatInt(last, 10))
+	}
 }
 
 type sessionRequest struct {

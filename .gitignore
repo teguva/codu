@@ -25,6 +25,9 @@ client/local.properties
 client/.idea/
 *.iml
 captures/
+client/keystore.properties
+client/keystore/
+*.jks
 
 # IDE / OS
 .idea/
