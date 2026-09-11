@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.runtime.Composable
@@ -45,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -56,13 +58,15 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.ui.compose.PlayerSurface
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.compose.ContentFrame
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import kotlinx.coroutines.CoroutineScope
@@ -80,8 +84,16 @@ import tv.coog.app.ui.theme.CoogTextMuted
 import tv.coog.app.ui.theme.CoogTextSecondary
 import tv.coog.app.ui.theme.CoogType
 
-private enum class PlayerMenu { None, Audio, Subtitles }
+private enum class PlayerMenu { None, Audio, Subtitles, Picture }
 
+/** How video is fitted into the TV frame. Default Fill keeps aspect ratio (no stretch). */
+private enum class PictureMode(val label: String, val scale: ContentScale) {
+    Fill("Fill", ContentScale.Fit),
+    Crop("Crop", ContentScale.Crop),
+    Stretch("Stretch", ContentScale.FillBounds),
+}
+
+@OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
     session: PlaybackSession?,
@@ -116,6 +128,7 @@ fun PlayerScreen(
     var hudVisible by remember { mutableStateOf(true) }
     var hudExpanded by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(PlayerMenu.None) }
+    var pictureMode by remember { mutableStateOf(PictureMode.Fill) }
     var position by remember { mutableLongStateOf(0L) }
     var buffered by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(session?.expectedDurationMs ?: 0L) }
@@ -424,8 +437,7 @@ fun PlayerScreen(
     val subsOn = selectedRemoteId != null || (!textOff && textTracks.any { it.selected })
     val audioLabel = audioTracks.firstOrNull { it.selected }?.label?.take(16) ?: "Audio"
     val subLabel = shortSubLabel()
-    val hasNeighbor = nextItem != null || previousItem != null
-    val railCount = 3 + (if (previousItem != null) 1 else 0) + (if (nextItem != null) 1 else 0)
+    val railCount = 4 + (if (previousItem != null) 1 else 0) + (if (nextItem != null) 1 else 0)
 
     fun subtitleMenuActions(): List<() -> Unit> = buildList {
         if (subsOn) {
@@ -472,11 +484,16 @@ fun PlayerScreen(
                 menuSel = 0
                 bumpHud(expanded = true)
             }
+            3 -> {
+                menu = if (menu == PlayerMenu.Picture) PlayerMenu.None else PlayerMenu.Picture
+                menuSel = PictureMode.entries.indexOf(pictureMode).coerceAtLeast(0)
+                bumpHud(expanded = true)
+            }
             else -> {
-                val prevIdx = if (previousItem != null) 3 else -1
+                val prevIdx = if (previousItem != null) 4 else -1
                 val nextIdx = when {
-                    previousItem != null && nextItem != null -> 4
-                    nextItem != null -> 3
+                    previousItem != null && nextItem != null -> 5
+                    nextItem != null -> 4
                     else -> -1
                 }
                 when (railSel) {
@@ -506,6 +523,11 @@ fun PlayerScreen(
             PlayerMenu.Subtitles -> {
                 subtitleMenuActions().getOrNull(menuSel)?.invoke()
             }
+            PlayerMenu.Picture -> {
+                val mode = PictureMode.entries.getOrNull(menuSel) ?: return
+                pictureMode = mode
+                bumpHud(expanded = true)
+            }
         }
     }
 
@@ -513,6 +535,7 @@ fun PlayerScreen(
         PlayerMenu.None -> 0
         PlayerMenu.Audio -> audioTracks.size
         PlayerMenu.Subtitles -> subtitleMenuActions().size
+        PlayerMenu.Picture -> PictureMode.entries.size
     }
 
     Box(
@@ -630,10 +653,15 @@ fun PlayerScreen(
             },
     ) {
         if (session != null) {
-            PlayerSurface(
-                player = player,
-                modifier = Modifier.fillMaxSize().focusProperties { canFocus = false },
-            )
+            Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
+                ContentFrame(
+                    player = player,
+                    contentScale = pictureMode.scale,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .focusProperties { canFocus = false },
+                )
+            }
         }
 
         if (cueLines.isNotEmpty() && !splash && menu == PlayerMenu.None) {
@@ -696,6 +724,7 @@ fun PlayerScreen(
                 subtitleDelayMs = subtitleDelayMs,
                 sizeLabel = sizeLabel,
                 subsOn = subsOn,
+                pictureMode = pictureMode,
                 onActivate = { index ->
                     menuSel = index
                     activateMenu()
@@ -726,6 +755,7 @@ fun PlayerScreen(
                 railSel = railSel,
                 audioLabel = audioLabel,
                 subLabel = subLabel,
+                pictureLabel = pictureMode.label,
                 hasNext = nextItem != null,
                 hasPrevious = previousItem != null,
                 onActivateRail = { index ->
@@ -750,6 +780,7 @@ private fun PlayerHud(
     railSel: Int,
     audioLabel: String,
     subLabel: String,
+    pictureLabel: String,
     hasNext: Boolean,
     hasPrevious: Boolean,
     onActivateRail: (Int) -> Unit,
@@ -825,16 +856,22 @@ private fun PlayerHud(
                     highlighted = !menuOpen && railSel == 2,
                     onClick = { onActivateRail(2) },
                 )
+                HudRailButton(
+                    icon = Icons.Outlined.AspectRatio,
+                    label = pictureLabel,
+                    highlighted = !menuOpen && railSel == 3,
+                    onClick = { onActivateRail(3) },
+                )
                 if (hasPrevious) {
                     HudRailButton(
                         icon = Icons.Filled.SkipPrevious,
                         label = "Prev",
-                        highlighted = !menuOpen && railSel == 3,
-                        onClick = { onActivateRail(3) },
+                        highlighted = !menuOpen && railSel == 4,
+                        onClick = { onActivateRail(4) },
                     )
                 }
                 if (hasNext) {
-                    val nextSel = if (hasPrevious) 4 else 3
+                    val nextSel = if (hasPrevious) 5 else 4
                     HudRailButton(
                         icon = Icons.Filled.SkipNext,
                         label = "Next",
@@ -980,41 +1017,61 @@ private fun SideSettingsPanel(
     subtitleDelayMs: Int,
     sizeLabel: String,
     subsOn: Boolean,
+    pictureMode: PictureMode,
     onActivate: (Int) -> Unit,
 ) {
     data class RowItem(val label: String, val checked: Boolean, val checkable: Boolean = true)
 
     if (menu == PlayerMenu.None) return
 
-    val isAudio = menu == PlayerMenu.Audio
-    val icon = if (isAudio) Icons.Outlined.GraphicEq else Icons.Outlined.ClosedCaption
-    val title = if (isAudio) "Audio" else "Subtitles"
+    val icon: ImageVector
+    val title: String
     val rows: List<RowItem>
     val empty: String?
-    if (isAudio) {
-        rows = audioTracks.map { RowItem(it.label.take(32), checked = it.selected) }
-        empty = if (rows.isEmpty()) "No audio tracks" else null
-    } else {
-        rows = buildList {
-            if (subsOn) {
-                add(RowItem(formatDelay(subtitleDelayMs), checked = false, checkable = false))
-                add(RowItem("+250 ms", checked = false, checkable = false))
-                add(RowItem("Size $sizeLabel", checked = false, checkable = false))
-            }
-            add(RowItem("Off", checked = textOff))
-            textTracks.forEach { track ->
-                val active = selectedRemoteId == null && track.selected && !textOff
-                add(RowItem(trackDisplayLabel(track), checked = active))
-            }
-            remoteTracks.forEach { track ->
-                add(RowItem(remoteDisplayLabel(track), checked = selectedRemoteId == track.id))
-            }
+    val toolCount: Int
+    when (menu) {
+        PlayerMenu.None -> return
+        PlayerMenu.Audio -> {
+            icon = Icons.Outlined.GraphicEq
+            title = "Audio"
+            rows = audioTracks.map { RowItem(it.label.take(32), checked = it.selected) }
+            empty = if (rows.isEmpty()) "No audio tracks" else null
+            toolCount = 0
         }
-        empty = when {
-            remoteBusy && rows.size <= 1 -> "Searching…"
-            remoteError.isNotBlank() && remoteTracks.isEmpty() && textTracks.isEmpty() -> remoteError
-            rows.isEmpty() -> "No subtitles found"
-            else -> null
+        PlayerMenu.Subtitles -> {
+            icon = Icons.Outlined.ClosedCaption
+            title = "Subtitles"
+            rows = buildList {
+                if (subsOn) {
+                    add(RowItem(formatDelay(subtitleDelayMs), checked = false, checkable = false))
+                    add(RowItem("+250 ms", checked = false, checkable = false))
+                    add(RowItem("Size $sizeLabel", checked = false, checkable = false))
+                }
+                add(RowItem("Off", checked = textOff))
+                textTracks.forEach { track ->
+                    val active = selectedRemoteId == null && track.selected && !textOff
+                    add(RowItem(trackDisplayLabel(track), checked = active))
+                }
+                remoteTracks.forEach { track ->
+                    add(RowItem(remoteDisplayLabel(track), checked = selectedRemoteId == track.id))
+                }
+            }
+            empty = when {
+                remoteBusy && rows.size <= 1 -> "Searching…"
+                remoteError.isNotBlank() && remoteTracks.isEmpty() && textTracks.isEmpty() -> remoteError
+                rows.isEmpty() -> "No subtitles found"
+                else -> null
+            }
+            toolCount = if (subsOn) 3 else 0
+        }
+        PlayerMenu.Picture -> {
+            icon = Icons.Outlined.AspectRatio
+            title = "Picture"
+            rows = PictureMode.entries.map { mode ->
+                RowItem(mode.label, checked = pictureMode == mode)
+            }
+            empty = null
+            toolCount = 0
         }
     }
 
@@ -1041,7 +1098,6 @@ private fun SideSettingsPanel(
                 if (empty != null && rows.size <= 1) {
                     Text(empty, style = CoogType.cardYear, color = CoogTextMuted, modifier = Modifier.padding(vertical = 4.dp))
                 }
-                val toolCount = if (!isAudio && subsOn) 3 else 0
                 rows.forEachIndexed { index, row ->
                     if (toolCount > 0 && index == toolCount) {
                         Box(
