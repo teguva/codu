@@ -652,6 +652,7 @@ fun CoogApp() {
                                 }.getOrDefault(continueWatching)
                             }
                         },
+                        onOpenSettings = { tab = BrowseTab.Settings },
                     )
                 }
             }

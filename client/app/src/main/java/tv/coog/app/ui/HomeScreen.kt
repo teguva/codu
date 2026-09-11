@@ -69,9 +69,11 @@ fun HomeScreen(
     onOpenFolder: (FolderRow) -> Unit,
     onPlayContinue: (MediaItem) -> Unit = {},
     onClearContinue: (MediaItem) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val folders = remember(items) { items.folderRows() }
     val firstFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
+    val enterRail = LocalEnterRail.current
 
     val hasContent = when (tab) {
         BrowseTab.Folders -> folders.isNotEmpty()
@@ -83,39 +85,40 @@ fun HomeScreen(
     val pad = Modifier.padding(start = inset, top = topBarHeight() + 6.dp, end = inset)
     when {
         error != null && !hasContent -> {
-            Column(
-                modifier = Modifier.fillMaxSize().background(CoogBgDeep).then(pad),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(error, color = MaterialTheme.colorScheme.error)
-                Text(
-                    "Open Settings and set the server to this PC's LAN IP on port 8090.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            BrowseFaultPane(
+                title = error,
+                body = "Open Settings and set the server to this PC's LAN IP on port 8090.",
+                firstFocus = firstFocus,
+                enterRail = enterRail,
+                actionLabel = "Open Settings",
+                onAction = onOpenSettings,
+                titleIsError = true,
+                modifier = pad,
+            )
         }
         loading -> {
-            Text(
-                "One moment.",
-                style = CoogType.heroTagline,
-                modifier = Modifier.fillMaxSize().background(CoogBgDeep).then(pad),
+            BrowseFaultPane(
+                title = "One moment.",
+                body = "Press ↑ for the menu if this takes too long.",
+                firstFocus = firstFocus,
+                enterRail = enterRail,
+                modifier = pad,
             )
         }
         !hasContent -> {
-            Column(
-                modifier = Modifier.fillMaxSize().background(CoogBgDeep).then(pad),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text("Nothing to show yet", style = CoogType.heroTitle)
-                Text(
-                    if (tasteColdStart) {
-                        "Watch a few titles so Match can learn your taste. Trending still works meanwhile."
-                    } else {
-                        "Trending titles appear here once the server can reach TMDB."
-                    },
-                    style = CoogType.heroPlot,
-                )
-            }
+            BrowseFaultPane(
+                title = "Nothing to show yet",
+                body = if (tasteColdStart) {
+                    "Watch a few titles so Match can learn your taste. Trending still works meanwhile."
+                } else {
+                    "Trending titles appear here once the server can reach TMDB. Press ↑ for Settings if the server URL is wrong."
+                },
+                firstFocus = firstFocus,
+                enterRail = enterRail,
+                actionLabel = "Open Settings",
+                onAction = onOpenSettings,
+                modifier = pad,
+            )
         }
         tab == BrowseTab.Folders -> {
             LazyColumn(
@@ -393,6 +396,66 @@ private fun ContinueCardMenu(
 
 private fun Key.isSelectKey(): Boolean =
     this == Key.DirectionCenter || this == Key.Enter || this == Key.NumPadEnter
+
+@Composable
+private fun BrowseFaultPane(
+    title: String,
+    body: String,
+    firstFocus: FocusRequester,
+    enterRail: () -> Unit,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    titleIsError: Boolean = false,
+) {
+    LaunchedEffect(title, actionLabel) {
+        delay(40)
+        runCatching { firstFocus.requestFocus() }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(CoogBgDeep)
+            .then(modifier),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            title,
+            style = if (titleIsError) CoogType.heroTagline else CoogType.heroTitle,
+            color = if (titleIsError) MaterialTheme.colorScheme.error else Color.Unspecified,
+        )
+        Text(
+            body,
+            style = CoogType.heroPlot,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.widthIn(max = 720.dp),
+        )
+        if (actionLabel != null && onAction != null) {
+            WhitePill(
+                label = actionLabel,
+                onClick = onAction,
+                modifier = Modifier
+                    .focusRequester(firstFocus)
+                    .onPreviewKeyEvent { event ->
+                        if (event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+                        if (event.type == KeyEventType.KeyDown) enterRail()
+                        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                    },
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .focusRequester(firstFocus)
+                    .focusable()
+                    .onPreviewKeyEvent { event ->
+                        if (event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+                        if (event.type == KeyEventType.KeyDown) enterRail()
+                        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                    },
+            )
+        }
+    }
+}
 
 private data class HomeShelf(
     val id: String,

@@ -186,6 +186,10 @@ fun AppShell(
             if (railFocusedState.value) return@LaunchedEffect
             if (runCatching { contentFocus.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
         }
+        // Empty / fault screens may have nothing focusable — open the nav so Settings is reachable.
+        if (!railFocusedState.value) {
+            enterRail()
+        }
     }
 
     Box(
