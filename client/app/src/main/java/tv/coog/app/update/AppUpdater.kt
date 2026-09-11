@@ -69,6 +69,29 @@ class AppUpdater(context: Context) {
     private val _state = MutableStateFlow(UpdateUiState())
     val state: StateFlow<UpdateUiState> = _state.asStateFlow()
 
+    @Volatile
+    private var resumeInstallAfterPermission = false
+
+    fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            appContext.packageManager.canRequestPackageInstalls()
+
+    /** Call when Settings / the app becomes visible again after the permission screen. */
+    suspend fun onAppResumed() {
+        if (!resumeInstallAfterPermission) return
+        if (!canInstallPackages()) {
+            _state.update {
+                it.copy(
+                    installing = false,
+                    message = "Still blocked. In Android settings, allow Coog to install unknown apps, then press Update again.",
+                )
+            }
+            return
+        }
+        resumeInstallAfterPermission = false
+        installLatest()
+    }
+
     suspend fun check() {
         _state.update {
             it.copy(checking = true, error = null, message = "Checking GitHub for a newer APK…")
@@ -110,19 +133,31 @@ class AppUpdater(context: Context) {
             it.copy(installing = true, error = null, progress = 0f, message = "Downloading ${update.apkName}…")
         }
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                !appContext.packageManager.canRequestPackageInstalls()
-            ) {
+            if (!canInstallPackages()) {
+                resumeInstallAfterPermission = true
                 appContext.startActivity(
                     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                         data = Uri.parse("package:${appContext.packageName}")
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     },
                 )
-                throw IllegalStateException("Allow Coog to install unknown apps, then press Update again.")
+                _state.update {
+                    it.copy(
+                        installing = false,
+                        progress = null,
+                        error = null,
+                        message = "Allow Coog to install unknown apps, then return here — the update continues automatically.",
+                    )
+                }
+                return
             }
             val apk = download(update)
-            _state.update { it.copy(progress = 1f, message = "Installing… Android may ask once to confirm.") }
+            _state.update {
+                it.copy(
+                    progress = 1f,
+                    message = "Installing… If Android shows a confirm screen, press Install / OK once.",
+                )
+            }
             val event = coroutineScope {
                 val pending = async { installEvents.first() }
                 ApkInstaller.install(appContext, apk)
@@ -140,7 +175,7 @@ class AppUpdater(context: Context) {
                     installing = false,
                     progress = null,
                     message = "",
-                    error = "Install timed out. Confirm the Android prompt, then try Update again.",
+                    error = "Install timed out. Confirm the Android prompt (or allow unknown apps for Coog), then try Update again.",
                 )
             }
         } catch (e: Exception) {

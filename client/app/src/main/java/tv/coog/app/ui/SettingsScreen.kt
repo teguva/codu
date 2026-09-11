@@ -109,7 +109,7 @@ fun SettingsScreen(
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("App", style = CoogType.shelfTitle)
             Text(
-                "Installed Coog ${update.currentVersion} (${update.currentCode}). New APKs come from GitHub Releases.",
+                "Installed Coog ${update.currentVersion} (${update.currentCode}). New APKs come from GitHub Releases. Use the GitHub/release build for updates — Studio debug installs use a different signing key and cannot update in place.",
                 style = CoogType.heroPlot,
                 modifier = Modifier.widthIn(max = 900.dp),
             )
