@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -26,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import kotlinx.coroutines.android.awaitFrame
 import kotlinx.coroutines.launch
 import tv.coog.app.data.JobItem
 import tv.coog.app.data.MediaItem
@@ -54,6 +57,7 @@ import tv.coog.app.ui.theme.CoogCached
 import tv.coog.app.ui.theme.CoogDanger
 import tv.coog.app.ui.theme.CoogTextMuted
 import tv.coog.app.ui.theme.CoogType
+import androidx.compose.ui.focus.FocusRequester.Companion.Cancel as FocusCancel
 
 private val PosterShape = RoundedCornerShape(12.dp)
 
@@ -445,6 +449,7 @@ fun FolderCatalogRow(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun <T> PivotedShelf(
     label: String,
@@ -460,19 +465,33 @@ private fun <T> PivotedShelf(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val itemCount = items.size
-    var focusedIndex by remember(items.map(keyOf)) { mutableIntStateOf(0) }
-    val localRequesters = remember(itemCount) { List(itemCount) { FocusRequester() } }
+    val itemKeys = remember(items) { items.map(keyOf) }
+    var focusedIndex by remember(itemKeys) { mutableIntStateOf(0) }
+    val localRequesters = remember(itemKeys) { List(itemCount) { FocusRequester() } }
     fun requesterAt(index: Int): FocusRequester =
-        if (index == 0 && firstFocus != null) firstFocus else localRequesters[index]
-    fun moveFocus(to: Int): Boolean {
+        if (index == 0 && firstFocus != null) firstFocus else localRequesters.getOrElse(index) { localRequesters.first() }
+
+    fun focusIndex(to: Int): Boolean {
         if (to !in 0 until itemCount) return false
         focusedIndex = to
         scope.launch {
             runCatching { listState.scrollToItem(to) }
-            runCatching { requesterAt(to).requestFocus() }
+            awaitFrame()
+            var ok = runCatching { requesterAt(to).requestFocus() }.getOrDefault(false)
+            if (!ok) {
+                awaitFrame()
+                ok = runCatching { requesterAt(to).requestFocus() }.getOrDefault(false)
+            }
         }
         return true
     }
+
+    // New result sets (search refresh) always start at the first poster.
+    LaunchedEffect(itemKeys) {
+        focusedIndex = 0
+        runCatching { listState.scrollToItem(0) }
+    }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 0.dp else 2.dp)) {
         Text(
             label,
@@ -483,13 +502,21 @@ private fun <T> PivotedShelf(
             LazyRow(
                 state = listState,
                 modifier = Modifier
-                    .focusRestorer()
-                    .onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                        when (event.key) {
-                            Key.DirectionRight -> moveFocus(focusedIndex + 1)
-                            Key.DirectionLeft -> moveFocus(focusedIndex - 1)
-                            else -> false
+                    .focusProperties {
+                        // Down from the search field lands mid-row geometrically; always take the first poster.
+                        enter = {
+                            focusedIndex = 0
+                            val ok = runCatching { requesterAt(0).requestFocus() }.getOrDefault(false)
+                            if (!ok) {
+                                scope.launch {
+                                    runCatching { listState.scrollToItem(0) }
+                                    awaitFrame()
+                                    runCatching { requesterAt(0).requestFocus() }
+                                }
+                            } else {
+                                scope.launch { runCatching { listState.scrollToItem(0) } }
+                            }
+                            FocusCancel
                         }
                     },
                 userScrollEnabled = false,
@@ -505,6 +532,14 @@ private fun <T> PivotedShelf(
                     val focusMod = Modifier
                         .focusRequester(requesterAt(index))
                         .onFocusChanged { if (it.isFocused) focusedIndex = index }
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionRight -> focusIndex(index + 1)
+                                Key.DirectionLeft -> focusIndex(index - 1)
+                                else -> false
+                            }
+                        }
                     itemContent(index, item, focusMod)
                 }
             }
