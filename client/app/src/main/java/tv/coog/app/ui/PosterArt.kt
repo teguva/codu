@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,32 +26,37 @@ import coil.request.ImageRequest
 import coil.size.Scale
 import tv.coog.app.data.MediaItem
 
-enum class ArtKind { Poster, Backdrop }
+enum class ArtKind { Poster, Backdrop, Still }
 
 @Composable
 fun PosterArt(
     item: MediaItem,
     modifier: Modifier = Modifier,
     kind: ArtKind = ArtKind.Poster,
-    badge: String? = null,
+    mark: CardMark? = null,
+    matchPercent: Int? = null,
+    showMatch: Boolean = false,
+    marksSize: MarkSize = MarkSize.Compact,
     contentScale: ContentScale = ContentScale.Crop,
     alignment: Alignment = if (kind == ArtKind.Backdrop) Alignment.CenterEnd else Alignment.Center,
+    serverFallback: Boolean = true,
 ) {
     val server = LocalCoogServer.current
     val (top, bottom) = item.posterColors()
-    var failed by remember(item.id, kind, server.url) { mutableStateOf(false) }
+    var failed by remember(item.id, kind, server.url, item.posterUrl, item.backdropUrl) { mutableStateOf(false) }
     val cacheKey = item.imdbId.ifBlank { "none" }
     val remote = when (kind) {
         ArtKind.Poster -> item.posterUrl
-        ArtKind.Backdrop -> item.backdropUrl.ifBlank { item.posterUrl }
+        ArtKind.Backdrop, ArtKind.Still -> item.backdropUrl.ifBlank { item.posterUrl }
     }
-    val url = if (remote.startsWith("http")) {
-        remote
-    } else {
-        when (kind) {
-            ArtKind.Poster -> server.posterUrl(item.id, cacheKey)
-            ArtKind.Backdrop -> server.backdropUrl(item.id, cacheKey)
-        }
+    val localArt = remote.contains("/api/v1/media/") && (
+        remote.contains("/poster") || remote.contains("/backdrop") || remote.contains("/artwork")
+    )
+    val url = when {
+        remote.startsWith("http") && !localArt -> remote
+        !serverFallback -> if (remote.startsWith("http")) remote else ""
+        kind == ArtKind.Poster -> server.posterUrl(item.id, cacheKey)
+        else -> server.backdropUrl(item.id, cacheKey)
     }
     val (decodeW, decodeH) = rememberArtPixels(kind)
     Box(modifier = modifier.background(Brush.linearGradient(listOf(top, bottom)))) {
@@ -86,18 +90,15 @@ fun PosterArt(
                 )
             }
         }
-        if (!badge.isNullOrBlank()) {
-            Text(
-                text = badge.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(8.dp)
-                    .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-            )
-        }
+        CardMarks(
+            mark = mark,
+            matchPercent = matchPercent,
+            size = marksSize,
+            showMatch = showMatch,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(6.dp),
+        )
     }
 }
 
@@ -110,6 +111,10 @@ private fun rememberArtPixels(kind: ArtKind): Pair<Int, Int> {
             ArtKind.Poster -> {
                 val w = (config.screenWidthDp * 0.14f * density).toInt().coerceIn(180, 420)
                 w to (w * 1.5f).toInt()
+            }
+            ArtKind.Still -> {
+                val w = (config.screenWidthDp * 0.28f * density).toInt().coerceIn(320, 780)
+                w to (w * 9 / 16)
             }
             ArtKind.Backdrop -> {
                 val w = (config.screenWidthDp * density).toInt().coerceIn(960, 1920)

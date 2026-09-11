@@ -16,6 +16,7 @@ server/coverage.out
 admin/node_modules/
 admin/dist/
 admin/.vite/
+server/internal/adminui/fs/assets/
 
 # Android
 client/.gradle/

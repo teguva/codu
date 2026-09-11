@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"coog/internal/adminui"
 	"coog/internal/auth"
 	"coog/internal/config"
 	"coog/internal/events"
@@ -27,6 +28,7 @@ import (
 	"coog/internal/settings"
 	"coog/internal/store"
 	"coog/internal/streams"
+	"coog/internal/taste"
 )
 
 type Server struct {
@@ -43,6 +45,12 @@ type Server struct {
 	rdMu       sync.Mutex
 	rdAt       time.Time
 	rdStatus   map[string]any
+	adminSrc   string
+	tasteMu    sync.Mutex
+	tasteProf  *taste.Profile
+	tasteFP    string
+	remuxMu    sync.Mutex
+	remuxing   map[string]*remuxProc
 }
 
 func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *probe.Prober) *Server {
@@ -53,14 +61,23 @@ func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *p
 	mux.HandleFunc("GET /api/v1/library/{id}", s.handleLibraryGet)
 	mux.HandleFunc("DELETE /api/v1/library/{id}", s.handleLibraryDelete)
 	mux.HandleFunc("POST /api/v1/library/rescan", s.handleLibraryRescan)
+	mux.HandleFunc("POST /api/v1/library/{id}/ignore", s.handleLibraryIgnore)
+	mux.HandleFunc("POST /api/v1/library/{id}/rematch", s.handleLibraryRematch)
 	mux.HandleFunc("GET /api/v1/media/{id}/stream", s.handleStream)
+	mux.HandleFunc("GET /api/v1/media/{id}/remux/{file}", s.handleRemux)
 	mux.HandleFunc("GET /api/v1/media/{id}/artwork", s.handleArtwork)
 	mux.HandleFunc("GET /api/v1/media/{id}/poster", s.handlePoster)
 	mux.HandleFunc("GET /api/v1/media/{id}/backdrop", s.handleBackdrop)
 	mux.HandleFunc("GET /api/v1/media/{id}/logo", s.handleLogo)
 	mux.HandleFunc("GET /api/v1/media/{id}/trailer", s.handleTrailer)
 	mux.HandleFunc("POST /api/v1/playback/sessions", s.handlePlaybackSession)
+	mux.HandleFunc("POST /api/v1/playback/prefetch-next", s.handlePrefetchNext)
 	mux.HandleFunc("GET /api/v1/catalog/home", s.handleCatalogHome)
+	mux.HandleFunc("GET /api/v1/catalog/browse", s.handleCatalogBrowse)
+	mux.HandleFunc("GET /api/v1/catalog/genres", s.handleCatalogGenres)
+	mux.HandleFunc("GET /api/v1/catalog/continue", s.handleCatalogContinue)
+	mux.HandleFunc("POST /api/v1/playback/progress", s.handlePlaybackProgress)
+	mux.HandleFunc("POST /api/v1/playback/progress/clear", s.handlePlaybackProgressClear)
 	mux.HandleFunc("GET /api/v1/catalog/series/{imdb}", s.handleCatalogShow)
 	mux.HandleFunc("GET /api/v1/catalog/streams", s.handleCatalogStreams)
 	mux.HandleFunc("GET /api/v1/catalog/search", s.handleCatalogSearch)
@@ -71,6 +88,11 @@ func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *p
 	mux.HandleFunc("GET /api/v1/settings/streaming", s.handleStreamingSettings)
 	mux.HandleFunc("PUT /api/v1/settings/streaming", s.handleStreamingSettings)
 	mux.HandleFunc("POST /api/v1/settings/streaming", s.handleStreamingSettings)
+	mux.HandleFunc("GET /api/v1/settings/subtitles", s.handleSubtitleSettings)
+	mux.HandleFunc("PUT /api/v1/settings/subtitles", s.handleSubtitleSettings)
+	mux.HandleFunc("POST /api/v1/settings/subtitles", s.handleSubtitleSettings)
+	mux.HandleFunc("GET /api/v1/subtitles", s.handleSubtitlesList)
+	mux.HandleFunc("GET /api/v1/subtitles/file", s.handleSubtitleFile)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleJobs)
 	mux.HandleFunc("POST /api/v1/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.handleJobGet)
@@ -80,13 +102,15 @@ func New(cfg config.Config, st *store.Store, scanner *library.Scanner, prober *p
 	mux.HandleFunc("GET /api/v1/jobs/{id}/progressive/{file}", s.handleProgressive)
 	mux.HandleFunc("GET /api/v1/server/stats", s.handleStats)
 	mux.HandleFunc("GET /api/v1/server/activity", s.handleActivity)
+	mux.HandleFunc("GET /api/v1/taste", s.handleTaste)
+	mux.HandleFunc("PUT /api/v1/taste", s.handleTasteUpdate)
+	mux.HandleFunc("POST /api/v1/taste/rebuild", s.handleTasteRebuild)
 	mux.HandleFunc("POST /api/v1/client/events", s.handleClientEvents)
 	mux.HandleFunc("GET /ws", s.hub.ServeHTTP)
 
-	if cfg.AdminDir != "" {
-		fs := http.FileServer(http.Dir(cfg.AdminDir))
-		mux.Handle("/", fs)
-	}
+	adminFS, adminSrc := adminui.Resolve(cfg.AdminDir)
+	mux.Handle("/", adminui.Handler(adminFS))
+	s.adminSrc = adminSrc
 
 	handler := withCORS(auth.Bearer(cfg.AuthToken)(mux))
 	s.http = &http.Server{
@@ -111,6 +135,7 @@ func (s *Server) Run(ctx context.Context) error {
 			"library", s.cfg.LibraryPath,
 			"data", s.cfg.DataPath,
 			"auth", s.cfg.AuthToken != "",
+			"admin", s.adminSrc,
 			"version", config.Version,
 		)
 		errCh <- s.http.Serve(ln)
@@ -281,6 +306,7 @@ func (s *Server) handlePlaybackSession(w http.ResponseWriter, r *http.Request) {
 		s.writeDirectSession(w, r, item, req.ClientCapabilities)
 		return
 	}
+	applyCatalogMediaID(&req)
 	if req.ImdbID != "" {
 		s.handleCatalogPlayback(w, r, req)
 		return
@@ -293,7 +319,7 @@ func (s *Server) handleCatalogPlayback(w http.ResponseWriter, r *http.Request, r
 	if kind == "" {
 		kind = "movie"
 	}
-	if item, ok := s.findLocalByIMDB(req.ImdbID, kind); ok {
+	if item, ok := s.findLocalMedia(req.ImdbID, kind, req.Season, req.Episode); ok {
 		if kind == "movie" || (item.Season == req.Season && item.Episode == req.Episode) || (req.Season == 0 && req.Episode == 0) {
 			s.writeDirectSession(w, r, item, req.ClientCapabilities)
 			return
@@ -359,6 +385,10 @@ func (s *Server) writeDirectSession(w http.ResponseWriter, r *http.Request, item
 		})
 		return
 	}
+	if result.Method == playback.MethodRemux {
+		s.writeRemuxSession(w, r, item, result)
+		return
+	}
 	sid, err := randomID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -422,6 +452,17 @@ func (s *Server) watchJobs(ctx context.Context) {
 						JobID:   job.ID,
 						MediaID: job.MediaID,
 					})
+					// Drop from the downloads queue once the library (or ephemeral
+					// workdir) holds the file. Temp workdir goes away only when we
+					// already copied into the library.
+					if job.MediaID != "" {
+						jobs.Cleanup(s.cfg.DataPath, job.ID)
+						_ = s.store.DeleteJob(job.ID)
+						delete(last, job.ID)
+						delete(sawReady, job.ID)
+						sawStatus[job.ID] = jobs.StatusFinished
+						continue
+					}
 				}
 				if job.Status == jobs.StatusError && sawStatus[job.ID] != jobs.StatusError {
 					s.hub.Record(events.Activity{

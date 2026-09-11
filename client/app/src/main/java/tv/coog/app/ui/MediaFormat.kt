@@ -51,6 +51,16 @@ fun MediaItem.episodeHeadline(): String {
     }
 }
 
+fun MediaItem.episodeStillUrl(seriesPoster: String, seriesBackdrop: String = ""): String {
+    val poster = posterUrl.trim()
+    val backdrop = backdropUrl.trim()
+    return when {
+        poster.isNotBlank() && poster != seriesPoster && poster != seriesBackdrop -> poster
+        backdrop.isNotBlank() && backdrop != seriesBackdrop && backdrop != seriesPoster -> backdrop
+        else -> ""
+    }
+}
+
 fun MediaItem.episodeName(): String {
     var s = cleanReleaseName(title)
     val show = cleanReleaseName(seriesName())
@@ -80,6 +90,16 @@ fun MediaItem.supporting(): String {
 fun MediaItem.seasonEpisode(): String {
     if (season <= 0 && episode <= 0) return ""
     return "S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}"
+}
+
+fun MediaItem.watchFraction(): Float? {
+    if (positionMs <= 0L) return null
+    val dur = when {
+        durationMs > 1_000L -> durationMs
+        runtimeMinutes > 0 -> runtimeMinutes * 60_000L
+        else -> return null
+    }
+    return (positionMs.toFloat() / dur.toFloat()).coerceIn(0.04f, 0.96f)
 }
 
 fun MediaItem.resolutionLabel(): String? = when {
@@ -218,6 +238,7 @@ fun mergeShowEpisodes(catalog: List<MediaItem>, local: List<MediaItem>): List<Me
     if (local.isEmpty()) return catalog
     val localBySE = LinkedHashMap<Pair<Int, Int>, MediaItem>()
     for (ep in local) {
+        if (ep.diskMediaId().isBlank() && ep.path.isBlank()) continue
         localBySE.putIfAbsent(ep.season to ep.episode, ep)
     }
     val seen = HashSet<Pair<Int, Int>>()
@@ -230,12 +251,12 @@ fun mergeShowEpisodes(catalog: List<MediaItem>, local: List<MediaItem>): List<Me
             if (loc == null) ep
             else ep.copy(
                 inLibrary = true,
-                libraryId = loc.libraryId.ifBlank { loc.id },
+                libraryId = loc.diskMediaId().ifBlank { loc.libraryId.ifBlank { loc.id } },
                 path = loc.path.ifBlank { ep.path },
             ),
         )
     }
-    local.filter { (it.season to it.episode) !in seen }
+    local.filter { (it.season to it.episode) !in seen && (it.diskMediaId().isNotBlank() || it.path.isNotBlank()) }
         .sortedWith(compareBy({ it.season }, { it.episode }, { it.title }))
         .forEach { out.add(it) }
     return out
@@ -353,6 +374,19 @@ fun MediaItem.heroMetaLine(): String {
     ).joinToString("  ·  ")
 }
 
+fun MediaItem.cardMetaLine(): String {
+    val runtime = when {
+        runtimeMinutes > 0 -> formatDuration(runtimeMinutes * 60_000L)
+        durationMs > 0 -> formatDuration(durationMs)
+        else -> null
+    }
+    return listOfNotNull(
+        year.takeIf { it > 0 }?.toString(),
+        certification.takeIf { hasOfficialMeta() && it.isNotBlank() },
+        runtime,
+    ).joinToString("  ·  ")
+}
+
 fun MediaItem.heroSubtitle(): String {
     if (!hasOfficialMeta()) return ""
     return tagline.trim()
@@ -369,38 +403,212 @@ fun MediaItem.heroDescription(): String {
 
 fun MediaItem.heroChips(rowLabel: String = kindLabel(), jobs: List<tv.coog.app.data.JobItem> = emptyList()): List<String> {
     val chips = mutableListOf<String>()
-    posterBadgeLabel(jobs)?.let { chips.add(it) }
     if (rowLabel.isNotBlank()) chips.add(rowLabel)
     year.takeIf { it > 0 }?.toString()?.let { chips.add(it) }
     formatDuration(durationMs)?.let { chips.add(it) }
-    if (hasOfficialMeta() && rating > 0) chips.add("★ ${"%.1f".format(rating)}")
     if (hasOfficialMeta()) chips.addAll(genres.map { it.trim() }.filter { it.isNotBlank() }.take(3))
     return chips
 }
 
-fun MediaItem.posterBadgeLabel(jobs: List<tv.coog.app.data.JobItem> = emptyList()): String? {
-    val imdb = imdbId
-    val job = if (imdb.isNotBlank()) {
-        jobs.firstOrNull { it.imdbId.equals(imdb, ignoreCase = true) && it.status != "finished" && it.status != "cancelled" && it.status != "error" }
-    } else {
-        null
-    }
-    return when {
-        job?.status == "queued" -> "Fetching"
-        job != null -> {
-            val pct = (job.progress * 100).toInt()
-            when {
-                pct > 0 -> "↓ $pct%"
-                job.ready -> "Ready"
-                else -> "Downloading"
+enum class CardMarkKind {
+    Local, Partial, Fetching, Downloading, Ready, Paused, Theatrical, ComingSoon, Failed
+}
+
+data class CardMark(
+    val kind: CardMarkKind,
+    val progress: Float = 0f,
+    val have: Int = 0,
+    val total: Int = 0,
+) {
+    val shortLabel: String
+        get() = when (kind) {
+            CardMarkKind.Local -> "Local"
+            CardMarkKind.Partial -> when {
+                total > 0 -> "$have/$total"
+                have > 0 -> "$have"
+                else -> "Some"
             }
+            CardMarkKind.Fetching -> "Wait"
+            CardMarkKind.Downloading -> "Save"
+            CardMarkKind.Ready -> "Ready"
+            CardMarkKind.Paused -> "Pause"
+            CardMarkKind.Theatrical -> "Cinema"
+            CardMarkKind.ComingSoon -> "Soon"
+            CardMarkKind.Failed -> "Fail"
         }
-        path.isNotBlank() || inLibrary -> "Local"
-        releasePhase == "coming_soon" -> "Coming soon"
-        releasePhase == "theatrical" -> "In theatres"
+}
+
+fun tv.coog.app.data.JobItem.transferProgress(): Float {
+    if (expectedDurationMs > 0 && bufferedMs > 0) {
+        return (bufferedMs.toFloat() / expectedDurationMs.toFloat()).coerceIn(0f, 1f)
+    }
+    return progress.toFloat().coerceIn(0f, 1f)
+}
+
+fun tv.coog.app.data.JobItem.toCardMark(): CardMark = when (status) {
+    "finished" -> CardMark(CardMarkKind.Local)
+    "error", "cancelled" -> CardMark(CardMarkKind.Failed)
+    "queued" -> CardMark(CardMarkKind.Fetching)
+    "paused" -> CardMark(CardMarkKind.Paused, transferProgress())
+    else -> {
+        val frac = transferProgress()
+        if (ready) CardMark(CardMarkKind.Ready, frac) else CardMark(CardMarkKind.Downloading, frac)
+    }
+}
+
+fun MediaItem.cardMark(
+    jobs: List<tv.coog.app.data.JobItem> = emptyList(),
+    library: List<MediaItem> = emptyList(),
+    episodes: List<MediaItem> = emptyList(),
+): CardMark? {
+    if (kind == "series") {
+        val peers = episodes.ifEmpty { library.libraryEpisodesFor(this) }
+        val catalogTotal = when {
+            episodes.isNotEmpty() -> episodes.size
+            episodeCount > 0 -> episodeCount
+            else -> peers.maxOfOrNull { it.episodeCount } ?: 0
+        }
+        collectionMark(peers, jobs, catalogTotal)?.let { return it }
+        return when (releasePhase) {
+            "coming_soon" -> CardMark(CardMarkKind.ComingSoon)
+            "theatrical" -> CardMark(CardMarkKind.Theatrical)
+            else -> null
+        }
+    }
+    val active = matchingJob(jobs.filter { it.status != "finished" && it.status != "cancelled" })
+    if (active != null) return active.toCardMark()
+    if (isLocal() || matchingJob(jobs.filter { it.status == "finished" || it.mediaId.isNotBlank() }) != null) {
+        return CardMark(CardMarkKind.Local)
+    }
+    return when (releasePhase) {
+        "coming_soon" -> CardMark(CardMarkKind.ComingSoon)
+        "theatrical" -> CardMark(CardMarkKind.Theatrical)
         else -> null
     }
 }
+
+fun ShowRow.cardMark(jobs: List<tv.coog.app.data.JobItem> = emptyList()): CardMark? {
+    val catalogTotal = header?.episodeCount?.takeIf { it > 0 }
+        ?: episodes.maxOfOrNull { it.episodeCount }?.takeIf { it > 0 }
+        ?: 0
+    return collectionMark(episodes, jobs, catalogTotal)
+}
+
+fun collectionMark(
+    episodes: List<MediaItem>,
+    jobs: List<tv.coog.app.data.JobItem>,
+    catalogTotal: Int = 0,
+): CardMark? {
+    if (episodes.isEmpty()) return null
+    val live = jobs.filter { it.status != "finished" && it.status != "cancelled" }
+    val transfers = episodes.mapNotNull { it.matchingJob(live) }.filter { it.status != "error" }
+    preferredTransfer(transfers)?.let { return it.toCardMark() }
+    val local = episodes.count { it.isLocal() }
+    val total = catalogTotal
+    if (local > 0 && total > 0 && local >= total) return CardMark(CardMarkKind.Local)
+    if (local > 0) {
+        val denom = if (total > 0) total else local
+        return CardMark(
+            kind = CardMarkKind.Partial,
+            progress = (local.toFloat() / denom.toFloat()).coerceIn(0.04f, 1f),
+            have = local,
+            total = total,
+        )
+    }
+    if (episodes.any { it.matchingJob(live)?.status == "error" }) {
+        return CardMark(CardMarkKind.Failed)
+    }
+    return null
+}
+
+fun seasonMark(
+    episodes: List<MediaItem>,
+    season: Int,
+    jobs: List<tv.coog.app.data.JobItem>,
+): CardMark? = collectionMark(
+    episodes.filter { it.season == season },
+    jobs,
+    catalogTotal = episodes.count { it.season == season },
+)
+
+private fun preferredTransfer(jobs: List<tv.coog.app.data.JobItem>): tv.coog.app.data.JobItem? =
+    jobs.firstOrNull { it.ready || it.status == "ready" }
+        ?: jobs.firstOrNull { it.status == "downloading" }
+        ?: jobs.firstOrNull { it.status == "queued" }
+        ?: jobs.firstOrNull { it.status == "paused" }
+
+fun List<MediaItem>.libraryEpisodesFor(item: MediaItem): List<MediaItem> {
+    val imdb = item.imdbId.trim()
+    val name = item.seriesName().ifBlank { item.headline() }
+    return filter { ep ->
+        if (ep.kind != "episode") return@filter false
+        when {
+            imdb.isNotBlank() && ep.imdbId.equals(imdb, ignoreCase = true) -> true
+            name.isNotBlank() && matchesShowTitle(ep.seriesName(), name) -> true
+            else -> false
+        }
+    }
+}
+
+fun MediaItem.matchPercent(): Int? {
+    // Only show Match when household taste scored this title — never disguise rating as Match.
+    if (tasteMatch > 0) return tasteMatch.coerceIn(1, 99)
+    return null
+}
+
+private val jobEpisodeRe = Regex("""(?i)(?<![A-Z0-9])S(\d{1,2})E(\d{1,3})(?![A-Z0-9])""")
+
+fun tv.coog.app.data.JobItem.seasonEpisode(): Pair<Int, Int>? {
+    val raw = url.trim()
+    if (raw.startsWith("imdb:", ignoreCase = true)) {
+        val parts = raw.substringAfter(":").split(":")
+        if (parts.size >= 3) {
+            val season = parts[1].toIntOrNull()
+            val episode = parts[2].toIntOrNull()
+            if (season != null && episode != null && episode > 0) return season to episode
+        }
+    }
+    val hit = jobEpisodeRe.find(title) ?: return null
+    return hit.groupValues[1].toInt() to hit.groupValues[2].toInt()
+}
+
+fun MediaItem.matchingJob(jobs: List<tv.coog.app.data.JobItem>): tv.coog.app.data.JobItem? {
+    if (jobs.isEmpty()) return null
+    val imdb = imdbId.trim()
+    if (imdb.isBlank()) return null
+    val pool = jobs.filter { it.imdbId.equals(imdb, ignoreCase = true) }
+    if (pool.isEmpty()) return null
+    if (kind == "episode" && episode > 0) {
+        val want = season to episode
+        return pool.firstOrNull { it.seasonEpisode() == want }
+    }
+    if (kind == "series") {
+        return pool.firstOrNull { it.seasonEpisode() == null }
+            ?: pool.firstOrNull()
+    }
+    return pool.firstOrNull { it.seasonEpisode() == null } ?: pool.firstOrNull()
+}
+
+fun MediaItem.withLibraryFromJobs(jobs: List<tv.coog.app.data.JobItem>): MediaItem {
+    if (isLocal()) return this
+    val done = matchingJob(jobs.filter { it.status == "finished" || (it.mediaId.isNotBlank() && it.status != "error" && it.status != "cancelled") })
+        ?: return this
+    val media = done.mediaId
+    if (media.isBlank()) return this
+    return copy(inLibrary = true, libraryId = media)
+}
+
+fun MediaItem.episodeStatusLine(jobs: List<tv.coog.app.data.JobItem>): String? {
+    val job = matchingJob(jobs.filter { it.status != "cancelled" }) ?: return null
+    return when (job.status) {
+        "finished" -> null
+        "error" -> job.error.ifBlank { "Failed" }
+        else -> job.remainingLabel() ?: job.subtitle().takeIf { it.contains("/") }
+    }
+}
+
+fun MediaItem.posterBadgeLabel(jobs: List<tv.coog.app.data.JobItem> = emptyList()): String? =
+    cardMark(jobs)?.shortLabel
 
 fun List<MediaItem>.librarySummary(): String {
     val movies = movieItems().size

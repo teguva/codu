@@ -1,7 +1,14 @@
 package tv.coog.app.ui
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 
 data class CoogServer(
     val url: String,
@@ -35,3 +42,25 @@ val LocalBrowseContentFocus = staticCompositionLocalOf<FocusRequester?> { null }
 val LocalRailFocus = staticCompositionLocalOf<FocusRequester?> { null }
 
 val LocalNavBarFocused = staticCompositionLocalOf { false }
+
+val LocalEnterRail = staticCompositionLocalOf<() -> Unit> { {} }
+
+@Composable
+fun Modifier.exitToRailOnUp(enabled: Boolean = true, location: String = "exitToRailOnUp"): Modifier {
+    val enterRail = LocalEnterRail.current
+    if (!enabled) return this
+    return onPreviewKeyEvent { event ->
+        if (event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+        // #region agent log
+        coogDebug(
+            "F",
+            location,
+            "up to rail",
+            mapOf("type" to event.type.toString()),
+            runId = "post-fix",
+        )
+        // #endregion
+        if (event.type == KeyEventType.KeyDown) enterRail()
+        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+    }
+}

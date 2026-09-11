@@ -25,12 +25,14 @@ Needs: Go 1.24+, FFmpeg/ffprobe on `PATH`. Acquire jobs also need `yt-dlp` on `P
 # API
 export COOG_LIBRARY_PATH="$HOME/Videos"   # Movies/ + Series/ layout
 export COOG_DATA_PATH="$HOME/.local/share/coog"
-# export COOG_AUTH_TOKEN="change-me"      # optional in v1
+# export COOG_AUTH_TOKEN="change-me"      # optional in v1; set this on LAN installs
 cd server
 go run ./cmd/coog-api
 # another terminal: go run ./cmd/coog-worker
 # GET http://127.0.0.1:8090/health
 ```
+
+On a LAN install (TV clients on the same network), set `COOG_AUTH_TOKEN` and paste the same value in the admin sidebar and the TV app Settings. Leaving it empty leaves `/api/*` open to anyone who can reach the host.
 
 Scan and stream:
 
@@ -80,6 +82,8 @@ cd client
 Each `v*` tag builds a signed APK (`coog-tv-vc{versionCode}-{versionName}.apk`) and attaches it to a [GitHub Release](https://github.com/teguva/coog/releases). Sideload that APK once (`adb install` or a TV downloader). After that, the app checks GitHub on launch; **Settings → Update** downloads the new APK and installs it. Android may ask once to allow Coog to install unknown apps, and may show a system confirm on each update.
 
 Studio debug builds are signed with a different key. Uninstall the debug build before switching to the GitHub APK, or in-place updates will fail.
+
+**Server / worker updates** still use the install path: pull the repo (or release tarball) and re-run `./deploy/install-linux.sh`, then `systemctl --user restart coog-api coog-worker`. There is no in-admin updater for the Linux box yet.
 
 On the emulator, the default server URL is `http://10.0.2.2:8090`. On a TCL / Google TV on LAN, set **Settings → Server URL** to `http://<host-lan-ip>:8090`. If `COOG_AUTH_TOKEN` is set, paste the same token there.
 

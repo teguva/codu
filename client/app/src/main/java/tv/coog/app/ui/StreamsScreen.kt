@@ -64,6 +64,8 @@ fun StreamsScreen(
                 kind = kind,
                 season = item.season,
                 episode = item.episode,
+                title = item.headline(),
+                year = item.year,
             )
             if (items.isEmpty()) {
                 error = "No sources found."
@@ -86,7 +88,6 @@ fun StreamsScreen(
         PosterArt(
             item = item,
             kind = ArtKind.Backdrop,
-            badge = null,
             modifier = Modifier.fillMaxSize(),
         )
         Box(
@@ -119,20 +120,48 @@ fun StreamsScreen(
                 Text(friendlyPlayError(playError), color = CoogDanger, style = CoogType.heroPlot)
             }
             when {
-                loading -> Text("Looking up Torrentio and Real-Debrid…", style = CoogType.heroPlot)
+                loading -> Text("Looking up torrents, Real-Debrid, and web sources…", style = CoogType.heroPlot)
                 error != null && items.isEmpty() -> Text(error ?: "", color = CoogDanger)
                 else -> {
+                    val best = remember(items) { items.filter { it.cached }.ifEmpty { items.take(3) } }
+                    val more = remember(items, best) { items.filterNot { it in best } }
                     LazyColumn(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp),
                     ) {
-                        itemsIndexed(items, key = { _, row -> row.infoHash.ifBlank { row.title } + row.size }) { index, row ->
+                        item(key = "best-header") {
+                            Text(
+                                if (best.any { it.cached }) "Best · ready to play" else "Best matches",
+                                style = CoogType.shelfTitle,
+                            )
+                        }
+                        itemsIndexed(best, key = { _, row ->
+                            "best-" + row.infoHash.ifBlank { row.url }.ifBlank { row.title } + row.size
+                        }) { index, row ->
                             StreamRow(
                                 candidate = row,
                                 onClick = { onPick(row) },
                                 modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
+                                badge = when {
+                                    row.cached -> "Fast"
+                                    index == 0 -> "Best"
+                                    else -> null
+                                },
                             )
+                        }
+                        if (more.isNotEmpty()) {
+                            item(key = "more-header") {
+                                Text("More sources", style = CoogType.shelfTitle, modifier = Modifier.padding(top = 8.dp))
+                            }
+                            itemsIndexed(more, key = { _, row ->
+                                "more-" + row.infoHash.ifBlank { row.url }.ifBlank { row.title } + row.size
+                            }) { _, row ->
+                                StreamRow(
+                                    candidate = row,
+                                    onClick = { onPick(row) },
+                                )
+                            }
                         }
                     }
                 }
@@ -146,6 +175,7 @@ private fun StreamRow(
     candidate: StreamCandidate,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    badge: String? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     Surface(
@@ -171,15 +201,25 @@ private fun StreamRow(
         ) {
             QualityChip(candidate.quality.ifBlank { "—" })
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    candidate.title.ifBlank { candidate.name }.ifBlank { candidate.infoHash },
-                    style = CoogType.cardTitle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        candidate.title.ifBlank { candidate.name }.ifBlank { candidate.infoHash },
+                        style = CoogType.cardTitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (!badge.isNullOrBlank()) {
+                        Text(badge, style = CoogType.chip, color = CoogCached)
+                    }
+                }
                 Text(
                     listOfNotNull(
-                        if (candidate.cached) "Cached" else "Needs download",
+                        when {
+                            candidate.kind.equals("web", true) || candidate.source.equals("web", true) -> "Web-DL"
+                            candidate.cached -> "Cached"
+                            else -> "Local torrent"
+                        },
                         if (candidate.source.equals("rdcatalog", ignoreCase = true)) "RD library" else null,
                         candidate.seeders.takeIf { it > 0 }?.let { "$it seeders" },
                         candidate.sizeLabel.ifBlank { null },
@@ -203,9 +243,10 @@ private fun StreamRow(
             ) {
                 Text(
                     when {
+                        candidate.kind.equals("web", true) || candidate.source.equals("web", true) -> "Web"
                         candidate.source.equals("rdcatalog", ignoreCase = true) -> "RD lib"
                         candidate.cached -> "RD+"
-                        else -> "Torrent"
+                        else -> "Local"
                     },
                     style = CoogType.chip,
                     color = Color.White,

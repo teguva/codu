@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -105,13 +106,19 @@ func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind str
 		return s.prober.MaterializeImage(r.Context(), img, dest)
 	}
 
+	if fresh(dest, item.MtimeUnix) {
+		return nil
+	}
+
 	info := s.meta.Ensure(r.Context(), item)
 	if !meta.IdentityConfirmed(item.Path, info) {
-		if kind == "poster" || kind == "logo" {
+		if kind == "logo" {
 			return errors.New("no artwork")
 		}
-		if fresh(dest, item.MtimeUnix) {
-			return nil
+		if kind == "poster" {
+			if err := s.fallbackPoster(dest, item); err == nil {
+				return nil
+			}
 		}
 		return s.prober.ExtractStill(r.Context(), item.Path, dest, item.DurationMs)
 	}
@@ -133,10 +140,58 @@ func (s *Server) ensureArt(r *http.Request, item store.MediaItem, dest, kind str
 			return nil
 		}
 	}
-	if kind == "poster" || kind == "logo" {
+	if kind == "logo" {
 		return errors.New("no artwork")
 	}
+	if kind == "poster" {
+		if err := s.fallbackPoster(dest, item); err == nil {
+			return nil
+		}
+	}
 	return s.prober.ExtractStill(r.Context(), item.Path, dest, item.DurationMs)
+}
+
+func (s *Server) fallbackPoster(dest string, item store.MediaItem) error {
+	artDir := filepath.Join(s.cfg.DataPath, "artwork")
+	for _, src := range []string{
+		filepath.Join(artDir, item.ID+"-backdrop.jpg"),
+		filepath.Join(artDir, item.ID+".jpg"),
+	} {
+		if !fresh(src, 0) {
+			continue
+		}
+		if err := copyArtFile(src, dest); err == nil && fresh(dest, 0) {
+			return nil
+		}
+	}
+	return errors.New("no poster fallback")
+}
+
+func copyArtFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp := dest + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	return os.Rename(tmp, dest)
 }
 
 func fresh(path string, itemMtime int64) bool {
@@ -224,6 +279,9 @@ func viewItem(item store.MediaItem, info meta.Info, origin string) map[string]an
 		}
 		if info.Director != nil {
 			out["director"] = info.Director
+		}
+		if info.EpisodeCount > 0 {
+			out["episodeCount"] = info.EpisodeCount
 		}
 	}
 	out["streamUrl"] = origin + "/api/v1/media/" + item.ID + "/stream"

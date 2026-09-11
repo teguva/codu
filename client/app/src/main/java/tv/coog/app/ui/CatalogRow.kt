@@ -6,19 +6,25 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -27,6 +33,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -34,12 +46,33 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import kotlinx.coroutines.launch
 import tv.coog.app.data.JobItem
 import tv.coog.app.data.MediaItem
+import tv.coog.app.ui.theme.CoogCached
 import tv.coog.app.ui.theme.CoogDanger
+import tv.coog.app.ui.theme.CoogTextMuted
 import tv.coog.app.ui.theme.CoogType
 
 private val PosterShape = RoundedCornerShape(12.dp)
+
+@Composable
+fun WatchProgressBar(item: MediaItem, modifier: Modifier = Modifier) {
+    val frac = item.watchFraction() ?: return
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(4.dp)
+            .background(Color.Black.copy(alpha = 0.5f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(frac)
+                .height(4.dp)
+                .background(Color.White),
+        )
+    }
+}
 
 internal data class PosterMetrics(val width: Dp, val height: Dp, val gap: Dp)
 
@@ -70,6 +103,7 @@ fun CatalogRow(
     modifier: Modifier = Modifier,
     firstFocus: FocusRequester? = null,
     jobs: List<JobItem> = emptyList(),
+    library: List<MediaItem> = emptyList(),
     insetStart: Dp = RailWidth,
     compact: Boolean = false,
     featured: Boolean = false,
@@ -88,11 +122,235 @@ fun CatalogRow(
                 onClick = { onOpen(item) },
                 onFocused = onFocused?.let { cb -> { cb(item) } },
                 modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                badge = if (showBadge) item.posterBadgeLabel(jobs) else null,
+                mark = if (showBadge) item.cardMark(jobs, library) else null,
                 exitUp = exitUp,
                 compact = hideCaptions,
                 featured = featured,
             )
+        }
+    }
+}
+
+@Composable
+fun EpisodeSeasonShelf(
+    episodes: List<MediaItem>,
+    onOpen: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    seriesPoster: String = "",
+    seriesBackdrop: String = "",
+    jobs: List<JobItem> = emptyList(),
+    insetStart: Dp = RailWidth,
+) {
+    if (episodes.isEmpty()) return
+    val seasons = remember(episodes) { episodes.map { it.season }.distinct().sorted() }
+    val defaultSeason = remember(episodes) {
+        episodes.firstOrNull { it.isLocal() }?.season ?: seasons.first()
+    }
+    var selectedSeason by remember { mutableIntStateOf(defaultSeason) }
+    val season = if (selectedSeason in seasons) selectedSeason else defaultSeason
+    val visible = remember(episodes, season) {
+        episodes.filter { it.season == season }.sortedBy { it.episode }
+    }
+    val metrics = rememberEpisodeMetrics()
+    val firstEpisodeFocus = remember { FocusRequester() }
+    val seasonFocus = remember { FocusRequester() }
+    val listState = remember(season) { LazyListState() }
+    val scope = rememberCoroutineScope()
+    fun focusFirstEpisode() {
+        scope.launch {
+            runCatching { listState.scrollToItem(0) }
+            runCatching { firstEpisodeFocus.requestFocus() }
+        }
+    }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Episodes",
+            style = CoogType.shelfTitle,
+            modifier = Modifier.padding(start = insetStart),
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            contentPadding = PaddingValues(start = insetStart, end = insetStart),
+            modifier = Modifier.fillMaxWidth().focusRestorer(),
+        ) {
+            itemsIndexed(seasons, key = { _, value -> "season-$value" }) { _, value ->
+                FilterChip(
+                    label = if (value <= 0) "Specials" else "Season $value",
+                    selected = value == season,
+                    onClick = { selectedSeason = value },
+                    onFocused = { selectedSeason = value },
+                    mark = seasonMark(episodes, value, jobs),
+                    modifier = Modifier
+                        .then(if (value == season) Modifier.focusRequester(seasonFocus) else Modifier)
+                        .focusProperties { down = firstEpisodeFocus }
+                        .onPreviewKeyEvent { event ->
+                            if (event.key != Key.DirectionDown) return@onPreviewKeyEvent false
+                            if (event.type == KeyEventType.KeyDown) focusFirstEpisode()
+                            true
+                        },
+                )
+            }
+        }
+        key(season) {
+            PivotBringIntoView(pin = insetStart) {
+                LazyRow(
+                    state = listState,
+                    userScrollEnabled = false,
+                    horizontalArrangement = Arrangement.spacedBy(metrics.gap),
+                    contentPadding = PaddingValues(
+                        start = insetStart,
+                        end = (LocalConfiguration.current.screenWidthDp.dp - insetStart - metrics.width).coerceAtLeast(insetStart),
+                        top = 10.dp,
+                        bottom = 12.dp,
+                    ),
+                ) {
+                    itemsIndexed(visible, key = { _, item -> "${item.season}:${item.episode}:${item.id}" }) { index, item ->
+                        val ep = item.withLibraryFromJobs(jobs)
+                        val epJobs = jobs.filter { it.status != "finished" && it.status != "cancelled" && it.status != "error" }
+                        EpisodeCard(
+                            item = ep,
+                            seriesPoster = seriesPoster,
+                            seriesBackdrop = seriesBackdrop,
+                            onClick = { onOpen(ep) },
+                            mark = ep.cardMark(jobs),
+                            status = ep.episodeStatusLine(jobs),
+                            job = ep.matchingJob(epJobs),
+                            modifier = if (index == 0) {
+                                Modifier
+                                    .focusRequester(firstEpisodeFocus)
+                                    .focusProperties { up = seasonFocus }
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+                                        if (event.type == KeyEventType.KeyDown) {
+                                            runCatching { seasonFocus.requestFocus() }
+                                        }
+                                        true
+                                    }
+                            } else {
+                                Modifier
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberEpisodeMetrics(): PosterMetrics {
+    val widthDp = LocalConfiguration.current.screenWidthDp.toFloat()
+    val cardDp = widthDp * 0.22f
+    val gapDp = widthDp * 0.010f
+    return remember(widthDp) {
+        PosterMetrics(width = cardDp.dp, height = (cardDp * 9f / 16f).dp, gap = gapDp.dp)
+    }
+}
+
+@Composable
+private fun EpisodeCard(
+    item: MediaItem,
+    seriesPoster: String,
+    seriesBackdrop: String,
+    onClick: () -> Unit,
+    mark: CardMark?,
+    status: String? = null,
+    job: JobItem? = null,
+    modifier: Modifier = Modifier,
+) {
+    val size = rememberEpisodeMetrics()
+    var focused by remember { mutableStateOf(false) }
+    val still = item.episodeStillUrl(seriesPoster, seriesBackdrop)
+    val art = item.copy(posterUrl = still, backdropUrl = still)
+    val number = item.seasonEpisode().ifBlank { if (item.episode > 0) "E${item.episode}" else "" }
+    val heading = item.episodeName()
+    Column(
+        modifier = Modifier.width(size.width),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Surface(
+            onClick = onClick,
+            shape = ClickableSurfaceDefaults.shape(shape = PosterShape),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent,
+                pressedContainerColor = Color.Transparent,
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
+            modifier = modifier
+                .fillMaxWidth()
+                .height(size.height)
+                .onFocusChanged { focused = it.isFocused },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(PosterShape)
+                    .then(
+                        if (focused) {
+                            Modifier.border(3.dp, Color.White, PosterShape)
+                        } else {
+                            Modifier.border(1.dp, Color.White.copy(alpha = 0.08f), PosterShape)
+                        },
+                    )
+                    .background(Color.White.copy(alpha = 0.06f)),
+            ) {
+                PosterArt(
+                    item = art,
+                    kind = ArtKind.Still,
+                    mark = mark,
+                    serverFallback = false,
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                if (still.isBlank() && number.isNotBlank()) {
+                    Text(
+                        number,
+                        style = CoogType.heroTagline,
+                        color = Color.White.copy(alpha = 0.92f),
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+                WatchProgressBar(
+                    item = item,
+                    modifier = Modifier.align(Alignment.BottomStart),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            if (number.isNotBlank()) {
+                Text(
+                    number,
+                    style = CoogType.cardYear,
+                    color = CoogTextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                heading.ifBlank { number.ifBlank { item.episodeHeadline() } },
+                style = CoogType.cardTitle,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!status.isNullOrBlank()) {
+                Text(
+                    status,
+                    style = CoogType.cardYear,
+                    color = when {
+                        status == "Local" -> CoogCached
+                        job?.status == "error" -> CoogDanger
+                        else -> CoogTextMuted
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -123,7 +381,7 @@ fun ShowCatalogRow(
                 onClick = { onOpen(show) },
                 onFocused = onFocused?.let { cb -> { cb(show.cover) } },
                 modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                badge = if (featured) null else show.cover.posterBadgeLabel(jobs),
+                mark = if (featured) null else show.cardMark(jobs),
                 exitUp = exitUp,
                 compact = hideCaptions,
                 featured = featured,
@@ -180,17 +438,20 @@ private fun Shelf(
             style = CoogType.shelfTitle,
             modifier = Modifier.padding(start = insetStart),
         )
-        LazyRow(
-            modifier = Modifier.focusRestorer(),
-            horizontalArrangement = Arrangement.spacedBy(metrics.gap),
-            contentPadding = PaddingValues(
-                start = insetStart,
-                end = if (compact) 12.dp else 28.dp,
-                top = if (compact) 14.dp else 12.dp,
-                bottom = if (compact) 14.dp else 16.dp,
-            ),
-            content = content,
-        )
+        PivotBringIntoView(pin = insetStart) {
+            LazyRow(
+                modifier = Modifier.focusRestorer(),
+                userScrollEnabled = false,
+                horizontalArrangement = Arrangement.spacedBy(metrics.gap),
+                contentPadding = PaddingValues(
+                    start = insetStart,
+                    end = (LocalConfiguration.current.screenWidthDp.dp - insetStart - metrics.width).coerceAtLeast(insetStart),
+                    top = if (compact) 14.dp else 12.dp,
+                    bottom = if (compact) 14.dp else 16.dp,
+                ),
+                content = content,
+            )
+        }
     }
 }
 
@@ -202,14 +463,14 @@ fun PosterCard(
     onClick: () -> Unit,
     onFocused: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    badge: String? = item.posterBadgeLabel(),
+    mark: CardMark? = item.cardMark(),
     exitUp: Boolean = false,
     compact: Boolean = false,
     featured: Boolean = false,
 ) {
     val size = rememberPosterMetrics(compact = compact, featured = featured)
     var focused by remember { mutableStateOf(false) }
-    val railFocus = LocalRailFocus.current
+    val enterRail = LocalEnterRail.current
     Column(
         modifier = Modifier.width(size.width),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -226,13 +487,20 @@ fun PosterCard(
             modifier = modifier
                 .fillMaxWidth()
                 .height(size.height)
-                .then(
-                    if (exitUp && railFocus != null) {
-                        Modifier.focusProperties { up = railFocus }
-                    } else {
-                        Modifier
-                    },
-                )
+                .onPreviewKeyEvent { event ->
+                    if (!exitUp || event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+                    // #region agent log
+                    coogDebug(
+                        "F",
+                        "CatalogRow.kt:PosterCard",
+                        "poster up",
+                        mapOf("title" to title, "type" to event.type.toString()),
+                        runId = "post-fix",
+                    )
+                    // #endregion
+                    if (event.type == KeyEventType.KeyDown) enterRail()
+                    event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                }
                 .onFocusChanged {
                     focused = it.isFocused
                     if (it.isFocused) onFocused?.invoke()
@@ -254,8 +522,12 @@ fun PosterCard(
                 PosterArt(
                     item = item,
                     kind = ArtKind.Poster,
-                    badge = badge,
+                    mark = mark,
                     modifier = Modifier.fillMaxSize(),
+                )
+                WatchProgressBar(
+                    item = item,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.BottomStart),
                 )
             }
         }
@@ -318,8 +590,7 @@ internal fun JobCard(
     exitUp: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val progress = job.progress.toFloat().coerceIn(0f, 1f)
-    val railFocus = LocalRailFocus.current
+    val enterRail = LocalEnterRail.current
     Surface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(shape = PosterShape),
@@ -330,9 +601,20 @@ internal fun JobCard(
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
         modifier = modifier
-            .then(
-                if (exitUp && railFocus != null) Modifier.focusProperties { up = railFocus } else Modifier,
-            )
+            .onPreviewKeyEvent { event ->
+                if (!exitUp || event.key != Key.DirectionUp) return@onPreviewKeyEvent false
+                // #region agent log
+                coogDebug(
+                    "F",
+                    "CatalogRow.kt:JobCard",
+                    "job up",
+                    mapOf("type" to event.type.toString()),
+                    runId = "post-fix",
+                )
+                // #endregion
+                if (event.type == KeyEventType.KeyDown) enterRail()
+                event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+            }
             .onFocusChanged { focused = it.isFocused }
             .width(width)
             .height(height),
@@ -348,11 +630,15 @@ internal fun JobCard(
                 .background(Color.White.copy(alpha = 0.08f))
                 .padding(14.dp),
         ) {
-            Column(
+            Row(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
                         job.headline(),
                         style = CoogType.cardTitle,
@@ -366,23 +652,7 @@ internal fun JobCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(99.dp))
-                        .background(Color.White.copy(alpha = 0.16f)),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(progress)
-                            .height(4.dp)
-                            .background(
-                                if (job.status == "error") CoogDanger else Color.White,
-                                RoundedCornerShape(99.dp),
-                            ),
-                    )
-                }
+                TransferRing(mark = job.toCardMark(), size = MarkSize.Comfort)
             }
         }
     }

@@ -91,4 +91,14 @@ func TestJobLogTailAndCancel(t *testing.T) {
 	if err != nil || hb.PID != 42 || hb.UpdatedAt == 0 {
 		t.Fatalf("%+v %v", hb, err)
 	}
+
+	if err := st.DeleteJob("b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetJob("b"); err != ErrNotFound {
+		t.Fatalf("expected deleted job, got %v", err)
+	}
+	if err := st.DeleteJob("missing"); err != ErrNotFound {
+		t.Fatalf("expected not found, got %v", err)
+	}
 }

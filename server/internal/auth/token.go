@@ -7,7 +7,7 @@ import (
 )
 
 // Bearer authenticates API requests with a shared secret.
-// Health checks are always public. If token is empty, all requests are allowed (dev mode).
+// Health checks and the admin SPA are always public. If token is empty, all requests are allowed (dev mode).
 func Bearer(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,5 +30,14 @@ func Bearer(token string) func(http.Handler) http.Handler {
 }
 
 func isPublic(path string) bool {
-	return path == "/health" || path == "/health/"
+	if path == "/health" || path == "/health/" {
+		return true
+	}
+	if path == "/ws" || strings.HasPrefix(path, "/ws/") {
+		return false
+	}
+	if path == "/api" || strings.HasPrefix(path, "/api/") {
+		return false
+	}
+	return true
 }

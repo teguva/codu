@@ -21,6 +21,18 @@ func TestCatalogTrailerRef(t *testing.T) {
 	}
 }
 
+func TestParseCatalogRefEpisode(t *testing.T) {
+	imdb, kind, season, episode := parseCatalogRef("catalog:tt13990474:1:1")
+	if imdb != "tt13990474" || kind != "series" || season != 1 || episode != 1 {
+		t.Fatalf("%s %s %d %d", imdb, kind, season, episode)
+	}
+	req := sessionRequest{MediaID: "catalog:tt13990474:1:1"}
+	applyCatalogMediaID(&req)
+	if req.ImdbID != "tt13990474" || req.Kind != "episode" || req.Season != 1 || req.Episode != 1 {
+		t.Fatalf("%+v", req)
+	}
+}
+
 func TestViewItemIncludesOverviewMeta(t *testing.T) {
 	item := store.MediaItem{ID: "m1", Kind: "movie", Title: "Foo", Path: "/Videos/Movies/Foo (2020) tt0111161/Foo.mkv"}
 	info := meta.Info{

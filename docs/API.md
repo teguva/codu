@@ -12,6 +12,8 @@ Machine-readable: [`../openapi/coog.yaml`](../openapi/coog.yaml)
 | GET | `/api/v1/library/{id}` | implemented |
 | DELETE | `/api/v1/library/{id}` | implemented (deletes the file, stem sidecars, and an empty movie folder; `?scope=series` on an episode removes the show folder) |
 | POST | `/api/v1/library/rescan` | implemented |
+| POST | `/api/v1/library/{id}/ignore` | implemented (sets `matchStatus` to `ignored` in `coog.json`) |
+| POST | `/api/v1/library/{id}/rematch` | implemented (optional `{ "imdbId": "tt…" }`; clears blocking status and re-enriches) |
 | GET | `/api/v1/media/{id}/stream` | implemented (HTTP Range) |
 | GET | `/api/v1/media/{id}/poster` | implemented |
 | GET | `/api/v1/media/{id}/backdrop` | implemented |
@@ -31,9 +33,9 @@ Machine-readable: [`../openapi/coog.yaml`](../openapi/coog.yaml)
 | GET | `/api/v1/jobs` | implemented |
 | POST | `/api/v1/jobs` | implemented (`type: ytdlp`, `http`, `debrid`) |
 | GET | `/api/v1/jobs/{id}` | implemented |
-| POST | `/api/v1/jobs/{id}/cancel` | implemented (marks cancelled; worker kills ffmpeg/yt-dlp) |
+| POST | `/api/v1/jobs/{id}/cancel` | implemented (stops worker, deletes job + temp workdir; library files untouched) |
 | POST | `/api/v1/jobs/{id}/pause` | implemented (stops the worker; files stay; resume with retry) |
-| POST | `/api/v1/jobs/{id}/retry` | implemented (re-queues `error` / `cancelled` / `paused`) |
+| POST | `/api/v1/jobs/{id}/retry` | implemented (re-queues `error` / `paused`) |
 | GET | `/api/v1/jobs/{id}/progressive/{file}` | growing HLS playlist and segments |
 | GET | `/api/v1/server/stats` | implemented (disk, ffmpeg, jobs, worker heartbeat, Real-Debrid user, catalog error) |
 | GET | `/api/v1/server/activity` | in-memory ring buffer (last 500 client/server events) |
@@ -99,7 +101,7 @@ Debrid from the TV source picker:
 
 When `infoHash` is set the worker resolves that torrent through Real-Debrid and skips Torrentio auto-pick. An active job with the same hash is reused.
 
-Statuses: `queued`, `downloading`, `ready`, `finished`, `error`, `cancelled`. `ready` means Media3 can open the progressive HLS URL while the download continues. Failed jobs include `error` plus a short `logTail` (last stderr from yt-dlp/ffmpeg). Real-Debrid tokens are redacted in activity logs and job URLs. `coog-worker` must be running and `yt-dlp` must be on `PATH`.
+Statuses: `queued`, `downloading`, `ready`, `finished`, `error`, `cancelled`, `paused`. `GET /jobs` only returns active queue rows (`queued` / `downloading` / `ready` / `paused` / `error`). Cancel deletes the job and its temp workdir under `data/jobs/{id}` (same as discarding the download). When a job finishes into the library, it is removed from the queue after `job.finished`; library files stay. `ready` means Media3 can open the progressive HLS URL while the download continues. Failed jobs include `error` plus a short `logTail` (last stderr from yt-dlp/ffmpeg). Real-Debrid tokens are redacted in activity logs and job URLs. `coog-worker` must be running and `yt-dlp` must be on `PATH`.
 
 `PUT /api/v1/settings/streaming` accepts `torrentioProviders` and `excludeQualities` arrays in addition to the save-to-library / binge / Real-Debrid token fields.
 

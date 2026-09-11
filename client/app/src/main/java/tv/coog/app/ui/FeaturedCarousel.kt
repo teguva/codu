@@ -1,6 +1,7 @@
 package tv.coog.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -19,9 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -29,7 +29,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +59,7 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.ui.compose.PlayerSurface
+import androidx.media3.ui.compose.ContentFrame
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
@@ -68,11 +67,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import tv.coog.app.data.CoogApi
 import tv.coog.app.data.MediaItem
-import tv.coog.app.ui.theme.CoogCached
 import tv.coog.app.ui.theme.CoogType
 import androidx.media3.common.MediaItem as ExoMediaItem
 
 private val CardShape = RoundedCornerShape(16.dp)
+private val FocusPad = 8.dp
 
 internal suspend fun catalogMatch(api: CoogApi, item: MediaItem): MediaItem? {
     val query = item.headline().ifBlank { item.title }
@@ -86,77 +85,74 @@ internal suspend fun catalogMatch(api: CoogApi, item: MediaItem): MediaItem? {
     return hits.firstOrNull { year == 0 || it.year == 0 || it.year == year } ?: hits.singleOrNull()
 }
 
+private fun hasCatalogArt(item: MediaItem): Boolean {
+    val poster = item.posterUrl
+    val backdrop = item.backdropUrl
+    fun remoteCdn(url: String) =
+        url.startsWith("http") && !url.contains("/api/v1/media/")
+    return remoteCdn(poster) || remoteCdn(backdrop)
+}
+
+private suspend fun resolveCatalogArt(api: CoogApi, item: MediaItem): MediaItem? = when {
+    item.imdbId.isNotBlank() -> runCatching {
+        api.catalogTitle(item.imdbId, item.kind.ifBlank { "movie" })
+    }.getOrNull()
+    item.tmdbId != 0 -> runCatching {
+        api.catalogTmdb(item.kind.ifBlank { "movie" }, item.tmdbId)
+    }.getOrNull()
+    else -> catalogMatch(api, item)
+}
+
 @Composable
 fun FeaturedCarousel(
     items: List<MediaItem>,
     onOpen: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
     label: String = "",
+    jobs: List<tv.coog.app.data.JobItem> = emptyList(),
+    library: List<MediaItem> = emptyList(),
     expanded: Boolean = true,
     onRowFocused: () -> Unit = {},
     firstFocus: FocusRequester? = null,
     exitUp: Boolean = false,
     insetStart: Dp = catalogInset(),
+    onCardMenu: ((MediaItem) -> Unit)? = null,
+    upFocus: FocusRequester? = null,
+    downFocus: FocusRequester? = null,
 ) {
     if (items.isEmpty()) return
     val server = LocalCoogServer.current
-    val railFocus = LocalRailFocus.current
     var selected by remember(items.firstOrNull()?.id) { mutableIntStateOf(0) }
     val index = selected.coerceIn(0, items.lastIndex)
-    val playFocus = firstFocus ?: remember { FocusRequester() }
-    val peekFocus = remember { List(2) { FocusRequester() } }
-    val navBarFocused = LocalNavBarFocused.current
-    val navBarFocusedState = rememberUpdatedState(navBarFocused)
+    val cardFocus = firstFocus ?: remember { FocusRequester() }
+    val enterRail = LocalEnterRail.current
+    val listState = rememberLazyListState()
     var extras by remember { mutableStateOf<Map<String, MediaItem>>(emptyMap()) }
     val featured = extras[items[index].id] ?: items[index]
-    val window = remember(items, index) { items.subList(index, items.size) }
-    val rowItems = if (expanded) window else items
-    var restorePlayOnIndex by remember { mutableStateOf(false) }
-    var restorePlayOnExpand by remember { mutableStateOf(false) }
 
-    LaunchedEffect(index) {
-        val restore = restorePlayOnIndex
-        restorePlayOnIndex = true
-        if (!restore || !expanded) return@LaunchedEffect
-        delay(40)
-        if (navBarFocusedState.value) return@LaunchedEffect
-        runCatching { playFocus.requestFocus() }
-    }
-    LaunchedEffect(expanded) {
-        val restore = restorePlayOnExpand
-        restorePlayOnExpand = true
-        if (!restore || !expanded) return@LaunchedEffect
-        delay(40)
-        if (navBarFocusedState.value) return@LaunchedEffect
-        runCatching { playFocus.requestFocus() }
-    }
-    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token) {
-        delay(220)
+    LaunchedEffect(items.joinToString { it.id }, server.url, server.token) {
         val api = CoogApi(server.url, server.token)
-        val remote = when {
-            featured.imdbId.isNotBlank() -> runCatching {
-                api.catalogTitle(featured.imdbId, featured.kind.ifBlank { "movie" })
-            }.getOrNull()
-            featured.tmdbId != 0 -> runCatching {
-                api.catalogTmdb(featured.kind.ifBlank { "movie" }, featured.tmdbId)
-            }.getOrNull()
-            else -> catalogMatch(api, featured)
+        val missing = items.filter { raw ->
+            val cur = extras[raw.id] ?: raw
+            !hasCatalogArt(cur)
         }
+        missing.forEachIndexed { i, raw ->
+            if (i > 0) delay(40L)
+            val remote = resolveCatalogArt(api, raw)
+            if (remote != null) {
+                extras = extras + (raw.id to mergeDetails(raw, remote))
+            }
+        }
+    }
+
+    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token) {
+        if (hasCatalogArt(featured)) return@LaunchedEffect
+        delay(120)
+        val api = CoogApi(server.url, server.token)
+        val remote = resolveCatalogArt(api, featured)
         if (remote != null) {
             extras = extras + (featured.id to mergeDetails(featured, remote))
         }
-    }
-
-    fun moveLeft(): Boolean {
-        if (index <= 0) return false
-        selected = index - 1
-        return true
-    }
-
-    fun moveRight(): Boolean {
-        if (index >= items.lastIndex) return false
-        selected = index + 1
-        return true
     }
 
     Column(
@@ -173,232 +169,128 @@ fun FeaturedCarousel(
         }
         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val gap = 12.dp
-            val innerWidth = maxWidth - insetStart - insetStart
-            val heightFromWidth = (innerWidth - gap * 2) * 9f / 28f
-            val rowHeight = if (expanded) minOf(maxHeight, heightFromWidth) else maxHeight
-            val featuredWidth = rowHeight * 16f / 9f
-            val peekWidth = rowHeight * 2f / 3f
-            LazyRow(
-                userScrollEnabled = !expanded,
-                horizontalArrangement = Arrangement.spacedBy(gap),
-                contentPadding = PaddingValues(start = insetStart, end = insetStart),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(rowHeight)
-                    .clipToBounds(),
-            ) {
-                itemsIndexed(rowItems, key = { _, item -> item.id }) { offset, raw ->
-                    val item = extras[raw.id] ?: raw
-                    val isBillboard = expanded && offset == 0
-                    if (isBillboard) {
-                        BillboardCard(
-                            item = item,
-                            onOpen = { onOpen(item) },
-                            playFocus = playFocus,
-                            upFocus = if (exitUp) railFocus else null,
-                            leftToRail = index == 0,
-                            railFocus = railFocus,
-                            onMoveLeft = ::moveLeft,
-                            onMoveRight = ::moveRight,
-                            width = featuredWidth,
-                            playTrailer = true,
-                        )
-                    } else {
-                        val collapsedIndex = if (expanded) index + offset else offset
-                        val usePlayFocus = !expanded && offset == index
-                        PeekCard(
-                            item = item,
-                            width = peekWidth,
-                            compact = !expanded,
-                            modifier =                                             Modifier
-                                                .then(
-                                                    when {
-                                                        usePlayFocus -> Modifier.focusRequester(playFocus)
-                                                        expanded && offset - 1 in peekFocus.indices -> {
-                                                            Modifier.focusRequester(peekFocus[offset - 1])
-                                                        }
-                                                        else -> Modifier
-                                                    },
-                                                )
-                                                .focusProperties { canFocus = !expanded }
-                                                .onFocusChanged {
-                                    if (it.isFocused) {
-                                        onRowFocused()
-                                        selected = collapsedIndex
-                                    }
-                                },
-                            onClick = {
-                                selected = collapsedIndex
-                                onRowFocused()
-                                if (!expanded) onOpen(item)
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BillboardCard(
-    item: MediaItem,
-    onOpen: () -> Unit,
-    playFocus: FocusRequester,
-    upFocus: FocusRequester?,
-    leftToRail: Boolean,
-    railFocus: FocusRequester?,
-    onMoveLeft: () -> Boolean,
-    onMoveRight: () -> Boolean,
-    width: Dp,
-    playTrailer: Boolean,
-) {
-    val genres = item.heroGenres()
-    val meta = item.heroMetaLine()
-    val plot = item.heroDescription()
-    Box(
-        modifier = Modifier
-            .width(width)
-            .fillMaxHeight()
-            .clip(CardShape),
-    ) {
-        PosterArt(
-            item = item,
-            kind = ArtKind.Backdrop,
-            badge = null,
-            contentScale = ContentScale.Crop,
-            alignment = Alignment.Center,
-            modifier = Modifier.fillMaxSize(),
-        )
-        if (playTrailer) {
-            MutedTrailer(item = item, modifier = Modifier.fillMaxSize())
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.horizontalGradient(
-                        0.00f to Color.Black.copy(alpha = 0.88f),
-                        0.38f to Color.Black.copy(alpha = 0.58f),
-                        0.68f to Color.Transparent,
+            val pin = insetStart
+            val rowHeight = maxHeight
+            val cardHeight = (rowHeight - FocusPad * 2).coerceAtLeast(1.dp)
+            val featuredWidth = cardHeight * 2f
+            val peekWidth = cardHeight * 2f / 3f
+            val focusedWidth = if (expanded) featuredWidth else peekWidth
+            val endPad = (maxWidth - pin - focusedWidth).coerceAtLeast(pin)
+            PivotBringIntoView(pin = pin) {
+                LazyRow(
+                    state = listState,
+                    userScrollEnabled = false,
+                    horizontalArrangement = Arrangement.spacedBy(gap),
+                    contentPadding = PaddingValues(
+                        start = pin,
+                        end = endPad,
+                        top = FocusPad,
+                        bottom = FocusPad,
                     ),
-                ),
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0.55f to Color.Transparent,
-                        1.00f to Color.Black.copy(alpha = 0.55f),
-                    ),
-                ),
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(0.72f)
-                .padding(start = 22.dp, end = 16.dp, top = 18.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    item.kindLabel().uppercase(),
-                    color = Color.White.copy(alpha = 0.72f),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.4.sp,
-                )
-                Text(
-                    item.headline(),
-                    style = CoogType.heroTitle.copy(
-                        fontSize = 28.sp,
-                        lineHeight = 32.sp,
-                        shadow = Shadow(Color.Black.copy(alpha = 0.9f), Offset(0f, 2f), 10f),
-                    ),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(rowHeight),
                 ) {
-                    if (item.rating > 0) {
-                        Text(
-                            "${(item.rating * 10).toInt()}% Match",
-                            color = CoogCached,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                    if (meta.isNotBlank()) {
-                        Text(meta, style = CoogType.heroPlot, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                if (genres.isNotEmpty()) {
-                    Text(
-                        genres.joinToString("  •  "),
-                        color = Color.White.copy(alpha = 0.78f),
-                        fontSize = 13.sp,
+                itemsIndexed(items, key = { _, item -> item.id }) { i, raw ->
+                    val item = extras[raw.id] ?: raw
+                    val featuredCard = expanded && i == index
+                    RowCard(
+                        item = item,
+                        featured = featuredCard,
+                        width = if (featuredCard) featuredWidth else peekWidth,
+                        playTrailer = featuredCard,
+                        mark = item.cardMark(jobs, library),
+                        onOpen = { onOpen(item) },
+                        onLongClick = onCardMenu?.let { menu -> { menu(item) } },
+                        modifier = Modifier
+                            .then(if (i == index) Modifier.focusRequester(cardFocus) else Modifier)
+                            .then(
+                                if (upFocus != null || downFocus != null) {
+                                    Modifier.focusProperties {
+                                        upFocus?.let { up = it }
+                                        downFocus?.let { down = it }
+                                    }
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    onRowFocused()
+                                    selected = i
+                                }
+                            }
+                            .onPreviewKeyEvent { event ->
+                                val toMenu = (exitUp && event.key == Key.DirectionUp) ||
+                                    (exitUp && i == 0 && event.key == Key.DirectionLeft)
+                                // #region agent log
+                                if (event.key == Key.DirectionUp || event.key == Key.DirectionLeft) {
+                                    coogDebug(
+                                        if (exitUp) "A" else "D",
+                                        "FeaturedCarousel.kt:preview",
+                                        "card dpad",
+                                        mapOf(
+                                            "key" to event.key.toString(),
+                                            "type" to event.type.toString(),
+                                            "exitUp" to exitUp,
+                                            "i" to i,
+                                            "toMenu" to toMenu,
+                                            "label" to label,
+                                            "expanded" to expanded,
+                                        ),
+                                    )
+                                }
+                                // #endregion
+                                if (toMenu) {
+                                    if (event.type == KeyEventType.KeyDown) enterRail()
+                                    return@onPreviewKeyEvent event.type == KeyEventType.KeyDown ||
+                                        event.type == KeyEventType.KeyUp
+                                }
+                                val target = when (event.key) {
+                                    Key.DirectionDown -> downFocus
+                                    Key.DirectionUp -> upFocus
+                                    else -> null
+                                }
+                                if (target == null) return@onPreviewKeyEvent false
+                                if (event.type == KeyEventType.KeyDown) {
+                                    runCatching { target.requestFocus() }
+                                }
+                                event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                            },
                     )
                 }
-                if (plot.isNotBlank()) {
-                    Text(
-                        plot,
-                        style = CoogType.heroPlot.copy(fontSize = 13.sp, lineHeight = 18.sp),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
             }
-            WhitePill(
-                label = "Play",
-                icon = Icons.Filled.PlayArrow,
-                onClick = onOpen,
-                modifier = Modifier
-                    .focusRequester(playFocus)
-                    .onPreviewKeyEvent { event ->
-                        when (event.key) {
-                            Key.DirectionLeft -> {
-                                if (leftToRail) return@onPreviewKeyEvent false
-                                val handled = onMoveLeft()
-                                if (handled) event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp else false
-                            }
-                            Key.DirectionRight -> {
-                                val handled = onMoveRight()
-                                if (handled) event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp else false
-                            }
-                            else -> false
-                        }
-                    }
-                    .focusProperties {
-                        if (leftToRail && railFocus != null) left = railFocus
-                        if (upFocus != null) up = upFocus
-                    },
-            )
         }
     }
 }
 
 @Composable
-private fun PeekCard(
+private fun RowCard(
     item: MediaItem,
+    featured: Boolean,
     width: Dp,
-    onClick: () -> Unit,
+    onOpen: () -> Unit,
     modifier: Modifier = Modifier,
-    compact: Boolean = false,
+    playTrailer: Boolean = false,
+    mark: CardMark? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val genres = item.heroGenres()
+    var trailerPlaying by remember(item.id) { mutableStateOf(false) }
+    val genres = item.heroGenres().take(2)
+    val meta = item.cardMetaLine()
+    val resumeAt = item.seasonEpisode()
     Surface(
-        onClick = onClick,
+        onClick = onOpen,
+        onLongClick = onLongClick,
         shape = ClickableSurfaceDefaults.shape(shape = CardShape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
             focusedContainerColor = Color.Transparent,
             pressedContainerColor = Color.Transparent,
         ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = if (featured) 1.02f else 1.08f),
         modifier = modifier
             .width(width)
             .fillMaxHeight()
@@ -408,76 +300,152 @@ private fun PeekCard(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(CardShape)
-                .then(
-                    if (focused) Modifier.border(3.dp, Color.White, CardShape)
-                    else Modifier,
-                ),
+                .then(if (focused) Modifier.border(3.dp, Color.White, CardShape) else Modifier),
         ) {
-            PosterArt(
-                item = item,
-                kind = ArtKind.Poster,
-                badge = null,
-                modifier = Modifier.fillMaxSize(),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0.45f to Color.Transparent,
-                            1.00f to Color.Black.copy(alpha = 0.88f),
-                        ),
-                    ),
-            )
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(if (compact) 8.dp else 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (!compact) {
-                    Text(
-                        item.kindLabel().uppercase(),
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 1.1.sp,
-                    )
-                }
-                Text(
-                    item.headline(),
-                    color = Color.White,
-                    fontSize = if (compact) 12.sp else 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = if (compact) 1 else 2,
-                    overflow = TextOverflow.Ellipsis,
+            if (featured) {
+                PosterArt(
+                    item = item,
+                    kind = ArtKind.Backdrop,
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize(),
                 )
-                if (!compact && item.rating > 0) {
-                    Text(
-                        "${(item.rating * 10).toInt()}% Match",
-                        color = CoogCached,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
+                if (playTrailer) {
+                    FocusedTrailer(
+                        item = item,
+                        onPlaying = { trailerPlaying = it },
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-                if (!compact && genres.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(0.72f)
+                        .background(
+                            Brush.horizontalGradient(
+                                0.00f to Color.Black.copy(alpha = if (trailerPlaying) 0.28f else 0.50f),
+                                0.55f to Color.Black.copy(alpha = if (trailerPlaying) 0.12f else 0.22f),
+                                1.00f to Color.Transparent,
+                            ),
+                        )
+                        .padding(start = 20.dp, end = 18.dp, top = 16.dp, bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Text(
-                        genres.joinToString("  •  "),
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 11.sp,
-                        maxLines = 1,
+                        item.headline(),
+                        style = CoogType.heroTitle.copy(
+                            fontSize = 24.sp,
+                            lineHeight = 28.sp,
+                            shadow = Shadow(Color.Black.copy(alpha = 0.9f), Offset(0f, 2f), 10f),
+                        ),
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (resumeAt.isNotBlank()) {
+                        Text(
+                            resumeAt,
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = !trailerPlaying,
+                        enter = fadeIn(tween(280)),
+                        exit = fadeOut(tween(420)),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                mark?.let { StatusMark(mark = it, size = MarkSize.Comfort) }
+                                item.matchPercent()?.let { MatchMark(percent = it, size = MarkSize.Comfort) }
+                            }
+                            if (meta.isNotBlank()) {
+                                Text(
+                                    meta,
+                                    color = Color.White.copy(alpha = 0.78f),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (genres.isNotEmpty()) {
+                                Text(
+                                    genres.joinToString("  •  "),
+                                    color = Color.White.copy(alpha = 0.70f),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    PosterArt(
+                        item = item,
+                        kind = ArtKind.Poster,
+                        mark = mark,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .fillMaxHeight(0.38f)
+                            .background(
+                                Brush.verticalGradient(
+                                    0.00f to Color.Transparent,
+                                    0.45f to Color.Black.copy(alpha = 0.18f),
+                                    1.00f to Color.Black.copy(alpha = 0.50f),
+                                ),
+                            ),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            item.headline(),
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            lineHeight = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = if (resumeAt.isNotBlank()) 1 else 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (resumeAt.isNotBlank()) {
+                            Text(
+                                resumeAt,
+                                color = Color.White.copy(alpha = 0.86f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
+            WatchProgressBar(
+                item = item,
+                modifier = Modifier.align(Alignment.BottomStart),
+            )
         }
     }
 }
 
 @Composable
-private fun MutedTrailer(
+private fun FocusedTrailer(
     item: MediaItem,
     modifier: Modifier = Modifier,
+    onPlaying: (Boolean) -> Unit = {},
 ) {
     val server = LocalCoogServer.current
     val mediaId = item.trailerMediaId()
@@ -485,6 +453,7 @@ private fun MutedTrailer(
     var start by remember(mediaId) { mutableStateOf(false) }
     LaunchedEffect(mediaId, server.url, server.token) {
         start = false
+        onPlaying(false)
         val api = CoogApi(server.url, server.token)
         val check = async {
             runCatching { api.trailerExists(mediaId) }.getOrDefault(false)
@@ -493,7 +462,7 @@ private fun MutedTrailer(
         start = check.await()
     }
     if (start && url.isNotBlank()) {
-        TrailerPlayer(url = url, token = server.token, modifier = modifier)
+        TrailerPlayer(url = url, token = server.token, onReady = onPlaying, modifier = modifier)
     }
 }
 
@@ -502,10 +471,12 @@ private fun TrailerPlayer(
     url: String,
     token: String,
     modifier: Modifier = Modifier,
+    onReady: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     var ready by remember(url) { mutableStateOf(false) }
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    LaunchedEffect(ready) { onReady(ready) }
     DisposableEffect(url, token) {
         val http = DefaultHttpDataSource.Factory()
         if (token.isNotBlank()) {
@@ -515,7 +486,7 @@ private fun TrailerPlayer(
             .setMediaSourceFactory(DefaultMediaSourceFactory(http))
             .build()
             .apply {
-                volume = 0f
+                volume = 1f
                 repeatMode = Player.REPEAT_MODE_ONE
                 setMediaItem(ExoMediaItem.fromUri(url))
                 addListener(object : Player.Listener {
@@ -532,6 +503,7 @@ private fun TrailerPlayer(
             }
         player = exo
         onDispose {
+            onReady(false)
             exo.release()
             player = null
             ready = false
@@ -540,7 +512,13 @@ private fun TrailerPlayer(
     val exo = player
     AnimatedVisibility(visible = ready && exo != null, enter = fadeIn(), exit = fadeOut()) {
         if (exo != null) {
-            PlayerSurface(player = exo, modifier = modifier)
+            Box(modifier.clipToBounds()) {
+                ContentFrame(
+                    player = exo,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
         }
     }
 }

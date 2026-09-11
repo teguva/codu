@@ -32,6 +32,7 @@ type tmdbMovie struct {
 	IMDBID       string  `json:"imdb_id"`
 	Status       string  `json:"status"`
 	MediaType    string  `json:"media_type"`
+	GenreIDs     []int   `json:"genre_ids"`
 	ProfilePath  string  `json:"profile_path"`
 	KnownForDept string  `json:"known_for_department"`
 	Genres       []struct {
@@ -42,6 +43,7 @@ type tmdbMovie struct {
 	ContentRatings      tmdbContentRatings `json:"content_ratings"`
 	Runtime             int                `json:"runtime"`
 	EpisodeRunTime      []int              `json:"episode_run_time"`
+	NumberOfEpisodes    int                `json:"number_of_episodes"`
 	OriginCountry       []string           `json:"origin_country"`
 	ProductionCountries []struct {
 		ISO31661 string `json:"iso_3166_1"`
@@ -156,6 +158,9 @@ func (e *Enricher) overlayTMDB(ctx context.Context, kind string, info Info, titl
 	if info.Certification == "" {
 		info.Certification = certificationFromTMDB(movie)
 	}
+	if info.EpisodeCount == 0 && movie.NumberOfEpisodes > 0 {
+		info.EpisodeCount = movie.NumberOfEpisodes
+	}
 	if info.Director == nil {
 		info.Director = directorFromTMDB(movie.Credits)
 	}
@@ -235,6 +240,59 @@ func (e *Enricher) tmdbSearch(ctx context.Context, kind, title string, year int)
 		return exact[0], nil
 	}
 	return tmdbMovie{}, fmt.Errorf("tmdb no exact title match")
+}
+
+type tmdbSeason struct {
+	Episodes []tmdbSeasonEpisode `json:"episodes"`
+}
+
+type tmdbSeasonEpisode struct {
+	EpisodeNumber int    `json:"episode_number"`
+	Name          string `json:"name"`
+	Overview      string `json:"overview"`
+	StillPath     string `json:"still_path"`
+	Runtime       int    `json:"runtime"`
+	AirDate       string `json:"air_date"`
+}
+
+func (e *Enricher) OverlayEpisodeStills(ctx context.Context, imdb string, eps []CatalogItem) []CatalogItem {
+	if !e.tmdbEnabled() || len(eps) == 0 || strings.TrimSpace(imdb) == "" {
+		return eps
+	}
+	tv, err := e.tmdbFind(ctx, "series", imdb)
+	if err != nil || tv.ID == 0 {
+		return eps
+	}
+	seasons := map[int]struct{}{}
+	for _, ep := range eps {
+		seasons[ep.Season] = struct{}{}
+	}
+	meta := map[[2]int]episodeStill{}
+	for season := range seasons {
+		payload, err := e.tmdbSeason(ctx, tv.ID, season)
+		if err != nil {
+			continue
+		}
+		for _, te := range payload.Episodes {
+			meta[[2]int{season, te.EpisodeNumber}] = episodeStill{
+				Title:   strings.TrimSpace(te.Name),
+				Plot:    strings.TrimSpace(te.Overview),
+				Still:   tmdbImage(te.StillPath, "w780"),
+				Runtime: te.Runtime,
+				Year:    yearFromRelease(te.AirDate),
+			}
+		}
+	}
+	return applyEpisodeStills(eps, meta)
+}
+
+func (e *Enricher) tmdbSeason(ctx context.Context, tvID, season int) (tmdbSeason, error) {
+	u := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/season/%d?api_key=%s", tvID, season, url.QueryEscape(e.tmdbKey))
+	var payload tmdbSeason
+	if err := e.getJSON(ctx, u, &payload); err != nil {
+		return tmdbSeason{}, err
+	}
+	return payload, nil
 }
 
 func (e *Enricher) tmdbDetail(ctx context.Context, kind string, id int) (tmdbMovie, error) {
@@ -345,9 +403,26 @@ func applyOverviewMeta(item *CatalogItem, movie tmdbMovie) {
 	if item.Certification == "" {
 		item.Certification = certificationFromTMDB(movie)
 	}
+	if item.EpisodeCount == 0 && movie.NumberOfEpisodes > 0 {
+		item.EpisodeCount = movie.NumberOfEpisodes
+	}
 	if item.Director == nil {
 		item.Director = directorFromTMDB(movie.Credits)
 	}
+}
+
+func (e *Enricher) tmdbEpisodeCount(ctx context.Context, id int) int {
+	if id == 0 {
+		return 0
+	}
+	var wrap struct {
+		NumberOfEpisodes int `json:"number_of_episodes"`
+	}
+	u := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d?api_key=%s", id, url.QueryEscape(e.tmdbKey))
+	if e.getJSON(ctx, u, &wrap) != nil {
+		return 0
+	}
+	return wrap.NumberOfEpisodes
 }
 
 func countryFromTMDB(movie tmdbMovie) string {

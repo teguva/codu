@@ -24,7 +24,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -38,6 +40,7 @@ fun HeroBanner(
     item: MediaItem?,
     rowLabel: String = "Movies",
     jobs: List<tv.coog.app.data.JobItem> = emptyList(),
+    library: List<MediaItem> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxWidth().fillMaxSize().background(CoogBgDeep)) {
@@ -45,7 +48,6 @@ fun HeroBanner(
             PosterArt(
                 item = item,
                 kind = ArtKind.Backdrop,
-                badge = null,
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.CenterEnd,
                 modifier = Modifier.fillMaxSize(),
@@ -102,17 +104,19 @@ fun HeroBanner(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    item.heroChips(rowLabel, jobs).take(5).forEachIndexed { index, chip ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    item.cardMark(jobs, library)?.let { StatusMark(mark = it, size = MarkSize.Comfort) }
+                    item.matchPercent()?.let { MatchMark(percent = it, size = MarkSize.Comfort) }
+                    item.heroChips(rowLabel, jobs).take(4).forEach { chip ->
                         Text(
                             chip,
                             style = CoogType.chip,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
-                                .background(
-                                    if (index == 0) Color.White.copy(alpha = 0.16f)
-                                    else Color.Black.copy(alpha = 0.38f),
-                                )
+                                .background(Color.Black.copy(alpha = 0.38f))
                                 .padding(horizontal = 10.dp, vertical = 4.dp),
                         )
                     }
@@ -123,7 +127,12 @@ fun HeroBanner(
 }
 
 @Composable
-fun TitleLockup(item: MediaItem, modifier: Modifier = Modifier) {
+fun TitleLockup(
+    item: MediaItem,
+    modifier: Modifier = Modifier,
+    logoHeight: Dp = 72.dp,
+    titleStyle: TextStyle = CoogType.heroTitle,
+) {
     val server = LocalCoogServer.current
     var logoFailed by remember(item.id, item.logoUrl, server.url) { mutableStateOf(false) }
     val logo = item.logoUrl.ifBlank {
@@ -144,13 +153,13 @@ fun TitleLockup(item: MediaItem, modifier: Modifier = Modifier) {
             contentScale = ContentScale.Fit,
             alignment = Alignment.CenterStart,
             onError = { logoFailed = true },
-            modifier = modifier.fillMaxWidth().height(72.dp),
+            modifier = modifier.fillMaxWidth().height(logoHeight),
         )
         return
     }
     Text(
         item.headline(),
-        style = CoogType.heroTitle.copy(
+        style = titleStyle.copy(
             shadow = Shadow(Color.Black.copy(alpha = 0.65f), Offset.Zero, 16f),
         ),
         maxLines = 2,

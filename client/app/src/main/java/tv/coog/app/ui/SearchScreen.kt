@@ -1,32 +1,39 @@
 package tv.coog.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -34,8 +41,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -53,6 +60,7 @@ import tv.coog.app.ui.theme.CoogType
 @Composable
 fun SearchScreen(
     jobs: List<JobItem>,
+    library: List<MediaItem> = emptyList(),
     onOpenTitle: (MediaItem) -> Unit,
     onOpenPerson: (PersonSummary) -> Unit,
 ) {
@@ -62,7 +70,6 @@ fun SearchScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<tv.coog.app.data.SearchResponse?>(null) }
     val fieldFocus = LocalBrowseContentFocus.current ?: remember { FocusRequester() }
-    val railFocus = LocalRailFocus.current
     LaunchedEffect(query, server.url, server.token) {
         val q = query.trim()
         if (q.length < 2) {
@@ -90,7 +97,7 @@ fun SearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(CoogBgDeep)
-            .padding(start = 40.dp, top = topBarHeight() + 6.dp, end = 40.dp, bottom = 32.dp),
+            .padding(start = catalogInset(), top = topBarHeight() + 6.dp, end = catalogInset(), bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         item {
@@ -108,11 +115,8 @@ fun SearchScreen(
                 value = query,
                 onValueChange = { query = it },
                 placeholder = "Search titles or actors",
-                modifier = Modifier
-                    .focusRequester(fieldFocus)
-                    .then(
-                        if (railFocus != null) Modifier.focusProperties { up = railFocus } else Modifier,
-                    ),
+                exitUp = true,
+                modifier = Modifier.focusRequester(fieldFocus),
             )
         }
         if (query.trim().length < 2 && result == null) {
@@ -135,12 +139,12 @@ fun SearchScreen(
                 }
                 if (movies.isNotEmpty()) {
                     item {
-                        CatalogRow(label = "Movies", items = movies, onOpen = onOpenTitle, jobs = jobs, insetStart = 0.dp)
+                        CatalogRow(label = "Movies", items = movies, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
                     }
                 }
                 if (series.isNotEmpty()) {
                     item {
-                        CatalogRow(label = "Series", items = series, onOpen = onOpenTitle, jobs = jobs, insetStart = 0.dp)
+                        CatalogRow(label = "Series", items = series, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
                     }
                 }
                 if (people.isNotEmpty()) {
@@ -148,15 +152,10 @@ fun SearchScreen(
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("People", style = CoogType.shelfTitle)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                itemsIndexed(people, key = { index, person -> "${person.tmdbId}-$index" }) { index, person ->
+                                itemsIndexed(people, key = { index, person -> "${person.tmdbId}-$index" }) { _, person ->
                                     PersonChip(
                                         person = person,
                                         onClick = { onOpenPerson(person) },
-                                        modifier = if (index == 0 && railFocus != null) {
-                                            Modifier.focusProperties { up = railFocus }
-                                        } else {
-                                            Modifier
-                                        },
                                     )
                                 }
                             }
@@ -168,10 +167,12 @@ fun SearchScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PersonScreen(
     person: PersonSummary,
     jobs: List<JobItem>,
+    library: List<MediaItem> = emptyList(),
     onBack: () -> Unit,
     onOpenTitle: (MediaItem) -> Unit,
 ) {
@@ -179,8 +180,8 @@ fun PersonScreen(
     var details by remember(person.tmdbId) { mutableStateOf(person) }
     var error by remember(person.tmdbId) { mutableStateOf<String?>(null) }
     var loading by remember(person.tmdbId) { mutableStateOf(person.credits.isEmpty()) }
-    val posterFocus = remember { FocusRequester() }
     val backFocus = remember { FocusRequester() }
+    val listState = rememberLazyListState()
     val movies = remember(details.credits) {
         details.credits.filter { it.kind != "series" && it.kind != "episode" }
             .sortedByDescending { it.year }
@@ -204,14 +205,30 @@ fun PersonScreen(
             loading = false
         }
     }
-    LaunchedEffect(knownFor.firstOrNull()?.id, loading, error) {
-        if (knownFor.isNotEmpty()) {
-            runCatching { posterFocus.requestFocus() }
-        } else {
-            runCatching { backFocus.requestFocus() }
-        }
+    LaunchedEffect(person.tmdbId) {
+        listState.scrollToItem(0)
+        runCatching { backFocus.requestFocus() }
+        // #region agent log
+        coogDebug(
+            "H",
+            "PersonScreen.kt:enter",
+            "focus back",
+            mapOf("id" to person.tmdbId),
+            runId = "post-fix",
+        )
+        delay(450)
+        coogDebug(
+            "H",
+            "PersonScreen.kt:enter",
+            "scroll after settle",
+            mapOf(
+                "index" to listState.firstVisibleItemIndex,
+                "offset" to listState.firstVisibleItemScrollOffset,
+            ),
+            runId = "post-fix",
+        )
+        // #endregion
     }
-
     val dept = details.knownForDepartment.ifBlank { person.knownForDepartment }
     val born = personBornLine(details.birthday, details.placeOfBirth)
     val counts = listOfNotNull(
@@ -241,113 +258,203 @@ fun PersonScreen(
                 ),
             ),
         )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 48.dp, end = 40.dp, top = 36.dp, bottom = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 248.dp, height = 372.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color.White.copy(alpha = 0.08f)),
-                    ) {
-                        val photo = details.profileUrl.ifBlank { person.profileUrl }
-                        if (photo.isNotBlank()) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(LocalContext.current)
-                                    .data(photo)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = details.name,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } else {
-                            Text(
-                                details.name.take(1).uppercase(),
-                                style = CoogType.heroTitle,
-                                modifier = Modifier.align(Alignment.Center),
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val pageHeight = maxHeight
+            val hasShelves = knownFor.isNotEmpty() || movies.isNotEmpty() || series.isNotEmpty()
+            val heroHeight = if (hasShelves) pageHeight * 0.70f else pageHeight
+            val posterHeight = minOf(248.dp, (heroHeight - 48.dp) * 0.68f)
+            val posterWidth = posterHeight * (248f / 372f)
+            val stayOnScreen = remember {
+                object : BringIntoViewSpec {
+                    override fun calculateScrollDistance(
+                        offset: Float,
+                        size: Float,
+                        containerSize: Float,
+                    ): Float {
+                        if (size >= containerSize * 0.55f) return 0f
+                        val trailing = offset + size
+                        if (offset >= 0f && trailing <= containerSize) return 0f
+                        if (offset < 0f) return offset
+                        if (trailing > containerSize) return trailing - containerSize
+                        return 0f
+                    }
+                }
+            }
+            // #region agent log
+            LaunchedEffect(pageHeight, knownFor.size, heroHeight) {
+                coogDebug(
+                    "J",
+                    "PersonScreen.kt:layout",
+                    "viewport",
+                    mapOf(
+                        "pageH" to pageHeight.value.toInt(),
+                        "heroH" to heroHeight.value.toInt(),
+                        "known" to knownFor.size,
+                        "movies" to movies.size,
+                        "series" to series.size,
+                    ),
+                    runId = "post-fix",
+                )
+            }
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+                    .collect { (idx, off) ->
+                        if (idx != 0 || off != 0) {
+                            coogDebug(
+                                "I",
+                                "PersonScreen.kt:scroll",
+                                "scrolled",
+                                mapOf("index" to idx, "offset" to off),
+                                runId = "post-fix",
                             )
                         }
                     }
-                    Column(
-                        modifier = Modifier.fillMaxWidth(0.78f).padding(top = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text(details.name.ifBlank { person.name }, style = CoogType.heroTitle, maxLines = 2)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (dept.isNotBlank()) {
+            }
+            // #endregion
+            CompositionLocalProvider(LocalBringIntoViewSpec provides stayOnScreen) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    userScrollEnabled = false,
+                ) {
+                    item(key = "hero") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(heroHeight)
+                                .padding(start = 72.dp, end = 40.dp, top = 28.dp, bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(32.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(posterWidth)
+                                    .height(posterHeight)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White.copy(alpha = 0.08f)),
+                            ) {
+                                val photo = details.profileUrl.ifBlank { person.profileUrl }
+                                if (photo.isNotBlank()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(photo)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = details.name,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Text(
+                                        details.name.take(1).uppercase(),
+                                        style = CoogType.heroTitle,
+                                        modifier = Modifier.align(Alignment.Center),
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f).fillMaxHeight().padding(vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
                                 Text(
-                                    dept,
-                                    style = CoogType.chip,
-                                    modifier = Modifier
-                                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
-                                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    details.name.ifBlank { person.name },
+                                    style = CoogType.heroTitle.copy(fontSize = 30.sp, lineHeight = 34.sp),
+                                    maxLines = 2,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (dept.isNotBlank()) {
+                                        Text(
+                                            dept,
+                                            style = CoogType.chip,
+                                            modifier = Modifier
+                                                .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
+                                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                                        )
+                                    }
+                                    if (counts.isNotBlank()) {
+                                        Text(counts, style = CoogType.heroTagline, color = CoogTextSecondary)
+                                    }
+                                }
+                                if (born.isNotBlank()) {
+                                    Text(born, style = CoogType.cardYear, color = CoogTextMuted)
+                                }
+                                if (details.biography.isNotBlank()) {
+                                    Text(
+                                        details.biography,
+                                        style = CoogType.heroPlot.copy(fontSize = 14.sp, lineHeight = 20.sp),
+                                        maxLines = 5,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                } else if (loading) {
+                                    Text("Loading filmography…", style = CoogType.heroPlot, color = CoogTextMuted)
+                                }
+                                if (error != null) {
+                                    Text(error ?: "", color = Color(0xFFFF8B8B))
+                                }
+                                GhostButton(
+                                    label = "Back",
+                                    onClick = onBack,
+                                    modifier = Modifier.focusRequester(backFocus),
                                 )
                             }
-                            if (counts.isNotBlank()) {
-                                Text(counts, style = CoogType.heroTagline, color = CoogTextSecondary)
-                            }
                         }
-                        if (born.isNotBlank()) {
-                            Text(born, style = CoogType.cardYear, color = CoogTextMuted)
-                        }
-                        if (details.biography.isNotBlank()) {
-                            Text(
-                                details.biography,
-                                style = CoogType.heroPlot,
-                                maxLines = 6,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        } else if (loading) {
-                            Text("Loading filmography…", style = CoogType.heroPlot, color = CoogTextMuted)
-                        }
-                        if (error != null) {
-                            Text(error ?: "", color = Color(0xFFFF8B8B))
-                        }
-                        GhostButton(
-                            label = "Back",
-                            onClick = onBack,
-                            modifier = Modifier.focusRequester(backFocus),
-                        )
                     }
-                }
-            }
-            if (knownFor.isNotEmpty()) {
-                item {
-                    CatalogRow(
-                        label = "Known for",
-                        items = knownFor,
-                        onOpen = onOpenTitle,
-                        jobs = jobs,
-                        firstFocus = posterFocus,
-                        insetStart = 0.dp,
-                    )
-                }
-            }
-            if (movies.isNotEmpty()) {
-                item {
-                    CatalogRow(
-                        label = "Movies",
-                        items = movies,
-                        onOpen = onOpenTitle,
-                        jobs = jobs,
-                        insetStart = 0.dp,
-                    )
-                }
-            }
-            if (series.isNotEmpty()) {
-                item {
-                    CatalogRow(
-                        label = "Series",
-                        items = series,
-                        onOpen = onOpenTitle,
-                        jobs = jobs,
-                        insetStart = 0.dp,
-                    )
+                    if (knownFor.isNotEmpty()) {
+                        item(key = "known") {
+                            CatalogRow(
+                                label = "Known for",
+                                items = knownFor,
+                                onOpen = onOpenTitle,
+                                jobs = jobs,
+                                library = library,
+                                insetStart = 72.dp,
+                                compact = true,
+                                onFocused = {
+                                    // #region agent log
+                                    coogDebug(
+                                        "I",
+                                        "PersonScreen.kt:knownFor",
+                                        "known-for focus",
+                                        mapOf(
+                                            "index" to listState.firstVisibleItemIndex,
+                                            "offset" to listState.firstVisibleItemScrollOffset,
+                                        ),
+                                        runId = "post-fix",
+                                    )
+                                    // #endregion
+                                },
+                            )
+                        }
+                    }
+                    if (movies.isNotEmpty()) {
+                        item(key = "movies") {
+                            CatalogRow(
+                                label = "Movies",
+                                items = movies,
+                                onOpen = onOpenTitle,
+                                jobs = jobs,
+                                library = library,
+                                insetStart = 72.dp,
+                                compact = true,
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                        }
+                    }
+                    if (series.isNotEmpty()) {
+                        item(key = "series") {
+                            CatalogRow(
+                                label = "Series",
+                                items = series,
+                                onOpen = onOpenTitle,
+                                jobs = jobs,
+                                library = library,
+                                insetStart = 72.dp,
+                                compact = true,
+                                modifier = Modifier.padding(bottom = 28.dp),
+                            )
+                        }
+                    }
                 }
             }
         }

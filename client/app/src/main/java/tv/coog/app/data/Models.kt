@@ -45,21 +45,38 @@ data class MediaItem(
     @SerialName("mediaId") val libraryId: String = "",
     @SerialName("releasePhase") val releasePhase: String = "",
     @SerialName("tmdbId") val tmdbId: Int = 0,
+    @SerialName("episodeCount") val episodeCount: Int = 0,
     val cast: List<CastMember> = emptyList(),
     val director: CastMember = CastMember(),
     @SerialName("runtimeMinutes") val runtimeMinutes: Int = 0,
     val certification: String = "",
     val country: String = "",
+    @SerialName("positionMs") val positionMs: Long = 0,
+    @SerialName("matchPercent") val tasteMatch: Int = 0,
 ) {
-    fun isLocal(): Boolean = path.isNotBlank() || inLibrary || libraryId.isNotBlank()
+    fun isLocal(): Boolean = path.isNotBlank() || diskMediaId().isNotBlank()
 
-    fun playableId(): String = when {
-        path.isNotBlank() -> id
-        libraryId.isNotBlank() -> libraryId
-        else -> id
+    fun diskMediaId(): String {
+        val lib = libraryId.trim()
+        if (lib.isNotBlank() && !lib.isVirtualMediaId()) return lib
+        if (id.isNotBlank() && !id.isVirtualMediaId()) return id
+        return ""
     }
 
-    fun trailerMediaId(): String = if (isLocal()) playableId() else id
+    fun playableId(): String = diskMediaId().ifBlank { id }
+
+    fun trailerMediaId(): String {
+        if (id.startsWith("catalog:")) return id
+        val imdb = imdbId.trim()
+        if (imdb.startsWith("tt")) {
+            return if (kind == "series" || kind == "episode") {
+                "catalog:$imdb:1:1"
+            } else {
+                "catalog:$imdb"
+            }
+        }
+        return id
+    }
 
     fun playBlocked(): Boolean = kind != "series" && kind != "episode" &&
         releasePhase == "coming_soon" && !isLocal()
@@ -108,6 +125,99 @@ data class CatalogItemsResponse(
 data class CatalogHomeResponse(
     val trendingMovies: List<MediaItem> = emptyList(),
     val trendingSeries: List<MediaItem> = emptyList(),
+    val forYou: List<MediaItem> = emptyList(),
+    val coldStart: Boolean = false,
+)
+
+@Serializable
+data class StreamingSettings(
+    val saveToLibrary: Boolean = true,
+    val autoplayNextEpisode: Boolean = true,
+    val autoDownloadNextEpisode: Boolean = true,
+    val prefetchBeforeEndMinutes: Int = 5,
+    val prefetchCount: Int = 1,
+    val continueOverlaySeconds: Int = 10,
+    val includeWebStreams: Boolean = true,
+)
+
+@Serializable
+data class ServerStats(
+    val version: String = "",
+    val libraryPath: String = "",
+    val dataPath: String = "",
+    val mediaCount: Int = 0,
+    val disk: DiskStats? = null,
+    val worker: WorkerStats = WorkerStats(),
+    val realDebrid: RealDebridStats = RealDebridStats(),
+    val catalogError: String = "",
+)
+
+@Serializable
+data class DiskStats(
+    val freeBytes: Long = 0,
+    val totalBytes: Long = 0,
+    val usedBytes: Long = 0,
+    val path: String = "",
+)
+
+@Serializable
+data class WorkerStats(
+    val stale: Boolean = true,
+    val updatedAt: Long = 0,
+    val pid: Int = 0,
+    val seenAgoS: Long = -1,
+)
+
+@Serializable
+data class RealDebridStats(
+    val configured: Boolean = false,
+    val premium: Boolean = false,
+    val username: String = "",
+    val type: String = "",
+    val error: String = "",
+    val expiration: String = "",
+)
+
+@Serializable
+data class PrefetchNextRequest(
+    val imdbId: String = "",
+    val season: Int = 0,
+    val episode: Int = 0,
+    val title: String = "",
+    val year: Int = 0,
+)
+
+@Serializable
+data class PrefetchNextResponse(
+    val ok: Boolean = false,
+    val skipped: Boolean = false,
+    val reason: String = "",
+    val jobId: String = "",
+)
+
+@Serializable
+data class CatalogGenre(
+    val id: Int = 0,
+    val name: String = "",
+)
+
+@Serializable
+data class CatalogGenresResponse(
+    val items: List<CatalogGenre> = emptyList(),
+)
+
+@Serializable
+data class PlaybackProgressRequest(
+    val imdbId: String = "",
+    val tmdbId: Int = 0,
+    val kind: String = "",
+    val title: String = "",
+    val year: Int = 0,
+    val season: Int = 0,
+    val episode: Int = 0,
+    val positionMs: Long = 0,
+    val durationMs: Long = 0,
+    val mediaId: String = "",
 )
 
 @Serializable
@@ -136,11 +246,47 @@ data class StreamCandidate(
     @SerialName("sizeLabel") val sizeLabel: String = "",
     val source: String = "",
     val provider: String = "",
+    val kind: String = "",
+    val url: String = "",
 )
 
 @Serializable
 data class StreamsResponse(
     val items: List<StreamCandidate> = emptyList(),
+)
+
+@Serializable
+data class SubtitleTrack(
+    val id: String = "",
+    val source: String = "",
+    val language: String = "",
+    val label: String = "",
+    val path: String = "",
+    val filename: String = "",
+    @SerialName("fileId") val fileId: Int = 0,
+    @SerialName("downloadCount") val downloadCount: Int = 0,
+    @SerialName("hearingImpaired") val hearingImpaired: Boolean = false,
+)
+
+@Serializable
+data class SubtitlesListResponse(
+    val ok: Boolean = false,
+    val tracks: List<SubtitleTrack> = emptyList(),
+    val error: String = "",
+    val settings: SubtitleSettings = SubtitleSettings(),
+)
+
+@Serializable
+data class SubtitleSettings(
+    val enabled: Boolean = true,
+    @SerialName("hasApiKey") val hasApiKey: Boolean = false,
+    @SerialName("apiKeyMasked") val apiKeyMasked: String = "",
+    val username: String = "",
+    @SerialName("hasPassword") val hasPassword: Boolean = false,
+    val userAgent: String = "",
+    val languages: List<String> = emptyList(),
+    val autoLoad: Boolean = true,
+    @SerialName("preferEmbedded") val preferEmbedded: Boolean = true,
 )
 
 @Serializable
@@ -204,9 +350,9 @@ data class JobItem(
 
     fun canPause(): Boolean = status == "queued" || status == "downloading" || status == "ready"
 
-    fun canResume(): Boolean = status == "paused" || status == "error" || status == "cancelled"
+    fun canResume(): Boolean = status == "paused" || status == "error"
 
-    fun canCancel(): Boolean = status != "finished" && status != "cancelled"
+    fun canCancel(): Boolean = status != "finished" && status != "cancelled" && status != "error"
 
     fun headline(): String = title.ifBlank { "Downloading…" }
 
@@ -262,3 +408,6 @@ data class ClientEventRequest(
     val jobId: String = "",
     val sessionId: String = "",
 )
+
+internal fun String.isVirtualMediaId(): Boolean =
+    startsWith("catalog:") || startsWith("continue:")

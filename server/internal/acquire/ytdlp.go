@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/anacrolix/torrent"
+
 	"coog/internal/config"
 	"coog/internal/events"
 	"coog/internal/jobs"
@@ -24,6 +26,7 @@ import (
 	"coog/internal/meta"
 	"coog/internal/probe"
 	"coog/internal/store"
+	"coog/internal/streams"
 )
 
 const (
@@ -35,9 +38,11 @@ const (
 var percentRe = regexp.MustCompile(`(?i)\[download\]\s+(\d+(?:\.\d+)?)%`)
 
 type Runner struct {
-	cfg    config.Config
-	store  *store.Store
-	prober *probe.Prober
+	cfg       config.Config
+	store     *store.Store
+	prober    *probe.Prober
+	torrentMu sync.Mutex
+	torrentCl *torrent.Client
 }
 
 func New(cfg config.Config, st *store.Store, prober *probe.Prober) *Runner {
@@ -81,6 +86,9 @@ func (r *Runner) heartbeat(ctx context.Context) {
 }
 
 func (r *Runner) runYTDLP(ctx context.Context, job *store.Job) error {
+	if isWebEmbed(job.URL) {
+		return r.runWebEmbed(ctx, job)
+	}
 	work := jobs.Dir(r.cfg.DataPath, job.ID)
 	hls := jobs.HLSDir(r.cfg.DataPath, job.ID)
 	if err := os.MkdirAll(hls, 0o755); err != nil {
@@ -125,18 +133,7 @@ func (r *Runner) runYTDLP(ctx context.Context, job *store.Job) error {
 	defer source.Close()
 
 	pr, pw := io.Pipe()
-	ytdlp := exec.CommandContext(ctx, r.cfg.YTDLP,
-		"--no-playlist",
-		"--no-warnings",
-		"--newline",
-		"--progress",
-		"--hls-use-mpegts",
-		"--merge-output-format", "mpegts",
-		"-f", "bv*+ba/b",
-		"-o", "-",
-		"--",
-		job.URL,
-	)
+	ytdlp := exec.CommandContext(ctx, r.cfg.YTDLP, ytdlpDownloadArgs(job.URL)...)
 	ytdlp.Stdout = io.MultiWriter(source, pw)
 	stderr, err := ytdlp.StderrPipe()
 	if err != nil {
@@ -210,6 +207,84 @@ func (r *Runner) runYTDLP(ctx context.Context, job *store.Job) error {
 	return r.finishJob(ctx, job, sourcePath)
 }
 
+func (r *Runner) runWebEmbed(ctx context.Context, job *store.Job) error {
+	tail := newLogSink()
+	media, err := streams.ResolveWebEmbed(ctx, job.URL)
+	if err != nil || media == "" {
+		media, err = r.ytdlpStreamURL(ctx, job.URL, tail)
+	}
+	if err != nil || media == "" {
+		if tail.String() != "" {
+			job.LogTail = tail.String()
+			_ = r.store.UpdateJob(*job)
+		}
+		return fmt.Errorf("could not extract video from this web source")
+	}
+	job.LogTail = tail.String()
+	return r.pullAndPack(ctx, job, media, streams.EmbedReferer(job.URL))
+}
+
+func (r *Runner) ytdlpStreamURL(ctx context.Context, pageURL string, tail *logSink) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	args := []string{"-g", "-f", "bv*+ba/b", "--no-playlist", "--no-warnings"}
+	args = append(args, ytdlpHeaderArgs(pageURL)...)
+	args = append(args, "--", pageURL)
+	cmd := exec.CommandContext(ctx, r.cfg.YTDLP, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if tail != nil && stderr.Len() > 0 {
+		_, _ = tail.Write(stderr.Bytes())
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+			return line, nil
+		}
+	}
+	return "", fmt.Errorf("yt-dlp returned no stream URL")
+}
+
+func ytdlpDownloadArgs(pageURL string) []string {
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--newline",
+		"--progress",
+		"--hls-use-mpegts",
+		"--merge-output-format", "mpegts",
+		"-f", "bv*+ba/b",
+		"-o", "-",
+	}
+	args = append(args, ytdlpHeaderArgs(pageURL)...)
+	return append(args, "--", pageURL)
+}
+
+func ytdlpHeaderArgs(pageURL string) []string {
+	if !isWebEmbed(pageURL) {
+		return nil
+	}
+	return []string{
+		"--referer", streams.EmbedReferer(pageURL),
+		"--add-header", "User-Agent: " + streams.WebUserAgent(),
+	}
+}
+
+func isWebEmbed(raw string) bool {
+	u := strings.ToLower(strings.TrimSpace(raw))
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return false
+	}
+	if strings.Contains(u, "youtube.com") || strings.Contains(u, "youtu.be") || strings.Contains(u, "googlevideo.com") {
+		return false
+	}
+	return true
+}
+
 type ytdlpInfo struct {
 	Title      string  `json:"title"`
 	Duration   float64 `json:"duration"`
@@ -219,7 +294,7 @@ type ytdlpInfo struct {
 func (r *Runner) dumpJSON(ctx context.Context, url string, tail *logSink) (ytdlpInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, r.cfg.YTDLP, "--dump-json", "--no-playlist", "--no-download", "--no-warnings", "--", url)
+	cmd := exec.CommandContext(ctx, r.cfg.YTDLP, append(append([]string{"--dump-json", "--no-playlist", "--no-download", "--no-warnings"}, ytdlpHeaderArgs(url)...), "--", url)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -405,6 +480,13 @@ func libraryDest(job store.Job, name string) (relDir, fileBase string, season, e
 	kind = "movie"
 	if rest, ok := strings.CutPrefix(job.URL, "imdb:"); ok {
 		_, season, episode, kind = parseImdbRef(rest, job.ImdbID)
+	}
+	if season == 0 && episode == 0 {
+		for _, m := range extractEpisodeMarkers(job.Title + " " + name) {
+			season, episode = m[0], m[1]
+			kind = "series"
+			break
+		}
 	}
 	if kind == "series" || season > 0 || episode > 0 {
 		if season <= 0 {

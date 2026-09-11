@@ -20,6 +20,13 @@ val CoogTextSecondary = Color.White.copy(alpha = 0.72f)
 val CoogTextMuted = Color.White.copy(alpha = 0.48f)
 val CoogCached = Color(0xFF8EE4A8)
 val CoogDanger = Color(0xFFFF8B8B)
+val CoogLocal = Color(0xFF5EE09A)
+val CoogPartial = CoogLocal
+val CoogFetch = Color(0xFF6EC8FF)
+val CoogReady = Color(0xFF7DFFCE)
+val CoogTheatre = Color(0xFFFFC46B)
+val CoogSoon = Color(0xFFB9A6FF)
+val CoogMarkOn = Color(0xFF101214)
 
 object CoogType {
     val heroTitle = TextStyle(

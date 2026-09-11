@@ -129,7 +129,18 @@ func enrichCandidate(c Candidate) Candidate {
 		}
 	}
 	if c.Provider == "" {
-		c.Provider = "Torrentio"
+		if c.Source == "web" {
+			c.Provider = "1movies"
+		} else {
+			c.Provider = "Torrentio"
+		}
+	}
+	if c.Kind == "" {
+		if c.Source == "web" {
+			c.Kind = "web"
+		} else {
+			c.Kind = "torrent"
+		}
 	}
 	return c
 }

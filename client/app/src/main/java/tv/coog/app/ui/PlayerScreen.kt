@@ -2,8 +2,11 @@ package tv.coog.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,10 +16,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.outlined.ClosedCaption
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -26,38 +44,59 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.compose.PlayerSurface
+import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import tv.coog.app.data.CoogApi
+import tv.coog.app.data.MediaItem
 import tv.coog.app.data.PlaybackSession
+import tv.coog.app.data.SubtitleTrack
 import tv.coog.app.player.PlayerTrack
 import tv.coog.app.player.PlayerViewModel
+import tv.coog.app.ui.theme.CoogFetch
 import tv.coog.app.ui.theme.CoogTextMuted
+import tv.coog.app.ui.theme.CoogTextSecondary
 import tv.coog.app.ui.theme.CoogType
 
 private enum class PlayerMenu { None, Audio, Subtitles }
 
 @Composable
 fun PlayerScreen(
-    session: PlaybackSession,
+    session: PlaybackSession?,
     title: String,
     token: String,
     serverUrl: String,
+    item: MediaItem? = null,
+    nextItem: MediaItem? = null,
+    previousItem: MediaItem? = null,
+    autoplayNext: Boolean = true,
+    prefetchNext: Boolean = false,
+    prefetchBeforeEndMinutes: Int = 5,
     onBack: () -> Unit,
+    onPlayNeighbor: ((MediaItem) -> Unit)? = null,
+    onPrefetchNeighbor: ((MediaItem) -> Unit)? = null,
     playerViewModel: PlayerViewModel = viewModel(),
 ) {
     val player = playerViewModel.player
@@ -65,30 +104,56 @@ fun PlayerScreen(
     val audioTracks by playerViewModel.audioTracks.collectAsState()
     val textTracks by playerViewModel.textTracks.collectAsState()
     val textOff by playerViewModel.textOff.collectAsState()
+    val firstFrame by playerViewModel.firstFrame.collectAsState()
+    val ended by playerViewModel.ended.collectAsState()
+    val cueLines by playerViewModel.cueLines.collectAsState()
+    val subtitleDelayMs by playerViewModel.subtitleDelayMs.collectAsState()
+    val subtitleSize by playerViewModel.subtitleSize.collectAsState()
+    // Full-screen loader only until the first frame. Seek/rebuffer must not cover video —
+    // ExoPlayer enters BUFFERING on every seek and the logo overlay was fighting the scrub.
+    val splash = playError == null && (session == null || !firstFrame)
+
     var hudVisible by remember { mutableStateOf(true) }
     var hudExpanded by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(PlayerMenu.None) }
-    var settingsFocused by remember { mutableStateOf(false) }
     var position by remember { mutableLongStateOf(0L) }
     var buffered by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(session.expectedDurationMs) }
+    var duration by remember { mutableLongStateOf(session?.expectedDurationMs ?: 0L) }
     var playing by remember { mutableStateOf(true) }
     var hudNonce by remember { mutableStateOf(0) }
-    var jobBuffered by remember { mutableLongStateOf(session.bufferedMs) }
-    var jobExpected by remember { mutableLongStateOf(session.expectedDurationMs) }
-    var jobDownloading by remember { mutableStateOf(session.method == "progressive") }
+    var jobBuffered by remember { mutableLongStateOf(session?.bufferedMs ?: 0L) }
+    var jobExpected by remember { mutableLongStateOf(session?.expectedDurationMs ?: 0L) }
+    var jobDownloading by remember { mutableStateOf(session?.method == "progressive") }
+    var remoteTracks by remember { mutableStateOf<List<SubtitleTrack>>(emptyList()) }
+    var remoteError by remember { mutableStateOf("") }
+    var remoteBusy by remember { mutableStateOf(false) }
+    var selectedRemoteId by remember { mutableStateOf<String?>(null) }
+    var autoLoadDone by remember { mutableStateOf(false) }
+    var preferredLangs by remember { mutableStateOf(listOf("en")) }
+    var autoLoad by remember { mutableStateOf(true) }
+    var preferEmbedded by remember { mutableStateOf(true) }
+
     val rootFocus = remember { FocusRequester() }
-    val settingsFocus = remember { FocusRequester() }
+    var railSel by remember { mutableStateOf(0) }
+    var menuSel by remember { mutableStateOf(0) }
 
     fun seekLimit(): Long {
         val caps = listOf(jobBuffered, buffered, duration).filter { it > 0 }
         return caps.minOrNull() ?: 0L
     }
 
-    fun showHud(expanded: Boolean = hudExpanded) {
+    fun bumpHud(expanded: Boolean = hudExpanded) {
         hudVisible = true
         hudExpanded = expanded
         hudNonce++
+    }
+
+    fun collapseHud() {
+        menu = PlayerMenu.None
+        hudExpanded = false
+        hudVisible = true
+        hudNonce++
+        runCatching { rootFocus.requestFocus() }
     }
 
     fun hideHud() {
@@ -98,65 +163,187 @@ fun PlayerScreen(
         runCatching { rootFocus.requestFocus() }
     }
 
+    fun expandHud() {
+        menu = PlayerMenu.None
+        railSel = 0
+        hudVisible = true
+        hudExpanded = true
+        hudNonce++
+    }
+
     fun togglePlay() {
         playerViewModel.togglePlay()
-        showHud()
+        bumpHud(expanded = hudExpanded)
     }
 
     fun seekBy(deltaMs: Long) {
         playerViewModel.seekBy(deltaMs, seekLimit())
-        showHud(expanded = false)
         menu = PlayerMenu.None
+        bumpHud(expanded = false)
+    }
+
+    fun reportWatch() {
+        val media = item ?: return
+        val pos = player.currentPosition
+        val dur = duration.takeIf { it > 0 } ?: player.duration.takeIf { it > 0 } ?: 0L
+        val mediaId = session?.mediaId.orEmpty().ifBlank { media.diskMediaId() }
+        val url = serverUrl
+        val tok = token
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { CoogApi(url, tok).reportProgress(media, pos, dur, mediaId) }
+        }
+    }
+
+    fun rankRemote(track: SubtitleTrack): Int {
+        val lang = track.language.lowercase()
+        var score = when (track.source) {
+            "sidecar" -> 30
+            "embedded" -> 20
+            "opensubtitles" -> 10
+            else -> 0
+        }
+        if (lang.isNotBlank() && preferredLangs.isNotEmpty()) {
+            val idx = preferredLangs.indexOfFirst { lang == it || lang.startsWith(it) }
+            if (idx >= 0) score += 50 - idx * 5
+        }
+        return score
+    }
+
+    fun applyRemote(track: SubtitleTrack) {
+        when {
+            track.id == "off" || track.source == "none" -> {
+                selectedRemoteId = null
+                playerViewModel.clearExternalSubtitle()
+            }
+            track.source == "opensubtitles" || track.source == "sidecar" -> {
+                val url = CoogApi(serverUrl, token).subtitleFileUrl(track.id)
+                selectedRemoteId = track.id
+                playerViewModel.setExternalSubtitle(url, track.language)
+            }
+        }
+        bumpHud(expanded = true)
+    }
+
+    fun shortSubLabel(): String {
+        if (selectedRemoteId != null) {
+            val t = remoteTracks.firstOrNull { it.id == selectedRemoteId }
+            return t?.language?.uppercase()?.ifBlank { null } ?: "On"
+        }
+        if (textOff || textTracks.isEmpty()) return "Off"
+        val sel = textTracks.firstOrNull { it.selected }
+        return sel?.language?.uppercase()?.ifBlank { null } ?: "On"
     }
 
     BackHandler {
         when {
-            menu != PlayerMenu.None -> menu = PlayerMenu.None
-            hudExpanded -> hideHud()
+            menu != PlayerMenu.None -> {
+                menu = PlayerMenu.None
+                bumpHud(expanded = true)
+            }
             else -> {
+                reportWatch()
                 player.pause()
                 onBack()
             }
         }
     }
 
+    LaunchedEffect(item?.id, title) {
+        playerViewModel.resetOpening()
+        remoteTracks = emptyList()
+        remoteError = ""
+        selectedRemoteId = null
+        autoLoadDone = false
+        menu = PlayerMenu.None
+        hudExpanded = false
+        hudVisible = true
+    }
     LaunchedEffect(Unit) {
         delay(80)
         runCatching { rootFocus.requestFocus() }
     }
-    LaunchedEffect(hudExpanded) {
-        if (hudExpanded) {
-            delay(60)
-            runCatching { settingsFocus.requestFocus() }
+    LaunchedEffect(hudExpanded, menu) {
+        // Always keep root focus — rail/menu use selection indices, not child focus.
+        delay(40)
+        runCatching { rootFocus.requestFocus() }
+    }
+    LaunchedEffect(session?.url, token, item?.positionMs) {
+        val url = session?.url?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        playerViewModel.play(url, token, startPositionMs = item?.positionMs ?: 0L)
+    }
+    LaunchedEffect(session?.url, item?.id, serverUrl, token, firstFrame) {
+        if (!firstFrame || serverUrl.isBlank()) return@LaunchedEffect
+        remoteBusy = true
+        try {
+            val api = CoogApi(serverUrl, token)
+            val media = item
+            val res = api.listSubtitles(
+                imdbId = media?.imdbId.orEmpty(),
+                kind = media?.kind.orEmpty(),
+                season = media?.season ?: 0,
+                episode = media?.episode ?: 0,
+                mediaId = session?.mediaId.orEmpty().ifBlank { media?.diskMediaId().orEmpty() },
+                query = media?.title.orEmpty().ifBlank { media?.showTitle.orEmpty() },
+                tmdbId = media?.tmdbId ?: 0,
+            )
+            preferredLangs = res.settings.languages.ifEmpty { listOf("en") }
+            autoLoad = res.settings.autoLoad
+            preferEmbedded = res.settings.preferEmbedded
+            remoteError = res.error
+            remoteTracks = res.tracks
+                .filter { it.id != "off" && it.source != "none" }
+                .sortedWith(compareByDescending<SubtitleTrack> { rankRemote(it) }.thenBy { it.label })
+                .take(6)
+            if (!autoLoadDone && autoLoad && textOff && selectedRemoteId == null) {
+                val embedded = textTracks.filter { it.language.isNotBlank() }
+                val embeddedBest = if (preferEmbedded) {
+                    embedded.maxByOrNull { track ->
+                        val lang = track.language.lowercase()
+                        val idx = preferredLangs.indexOfFirst { lang == it || lang.startsWith(it) }
+                        if (idx >= 0) 50 - idx * 5 else 0
+                    }?.takeIf { track ->
+                        val lang = track.language.lowercase()
+                        preferredLangs.any { lang == it || lang.startsWith(it) }
+                    }
+                } else null
+                when {
+                    embeddedBest != null -> playerViewModel.selectTrack(embeddedBest)
+                    else -> remoteTracks.firstOrNull { rankRemote(it) > 0 }?.let { applyRemote(it) }
+                }
+                autoLoadDone = true
+            }
+        } catch (err: Exception) {
+            remoteError = err.message.orEmpty()
+        } finally {
+            remoteBusy = false
         }
     }
-    LaunchedEffect(session.url) {
-        playerViewModel.play(session.url, token)
-    }
-    LaunchedEffect(playError, serverUrl, token, session.id) {
+    LaunchedEffect(playError, serverUrl, token, session?.id) {
         val message = playError ?: return@LaunchedEffect
+        val active = session ?: return@LaunchedEffect
         runCatching {
             CoogApi(serverUrl, token).reportEvent(
                 type = "player.error",
                 message = listOfNotNull(
                     message,
-                    session.method.takeIf { it.isNotBlank() }?.let { "method $it" },
+                    active.method.takeIf { it.isNotBlank() }?.let { "method $it" },
                 ).joinToString(" · "),
-                mediaId = session.mediaId,
-                jobId = session.jobId,
-                sessionId = session.id,
+                mediaId = active.mediaId,
+                jobId = active.jobId,
+                sessionId = active.id,
             )
         }
     }
-    LaunchedEffect(session.jobId, serverUrl, token) {
-        if (session.jobId.isBlank()) {
+    LaunchedEffect(session?.jobId, serverUrl, token) {
+        val jobId = session?.jobId.orEmpty()
+        if (jobId.isBlank()) {
             playerViewModel.suppressEnded = false
             return@LaunchedEffect
         }
         val api = CoogApi(serverUrl, token)
         while (true) {
             try {
-                val job = api.job(session.jobId)
+                val job = api.job(jobId)
                 jobBuffered = job.bufferedMs
                 if (job.expectedDurationMs > 0) {
                     jobExpected = job.expectedDurationMs
@@ -164,11 +351,15 @@ fun PlayerScreen(
                 }
                 jobDownloading = job.status == "downloading" || job.status == "ready" || job.status == "queued"
                 playerViewModel.suppressEnded = jobDownloading
-                if (job.status == "finished" || job.status == "error") {
+                if (job.status == "finished" || job.status == "error" || job.status == "cancelled") {
                     playerViewModel.suppressEnded = false
                     break
                 }
             } catch (_: Exception) {
+                // Job removed after cancel/finish — stop treating this as a live download.
+                playerViewModel.suppressEnded = false
+                jobDownloading = false
+                break
             }
             delay(1500)
         }
@@ -180,20 +371,149 @@ fun PlayerScreen(
             playing = player.isPlaying
             duration = playbackDurationMs(
                 exoDuration = player.duration,
-                expectedMs = maxOf(session.expectedDurationMs, jobExpected),
+                expectedMs = maxOf(session?.expectedDurationMs ?: 0L, jobExpected),
                 bufferedMs = maxOf(jobBuffered, buffered),
-                streaming = jobDownloading || session.method == "progressive",
+                streaming = jobDownloading || session?.method == "progressive",
             )
             delay(250)
         }
     }
-    LaunchedEffect(hudNonce, playing, hudExpanded, menu) {
-        if (!playing || hudExpanded || menu != PlayerMenu.None) return@LaunchedEffect
-        delay(4000)
+    LaunchedEffect(hudNonce, playing, hudExpanded, menu, hudVisible) {
+        if (!hudVisible || !playing || hudExpanded || menu != PlayerMenu.None) return@LaunchedEffect
+        delay(3500)
         hudVisible = false
     }
+    LaunchedEffect(session?.url, item?.id, playing) {
+        if (!playing) return@LaunchedEffect
+        while (true) {
+            delay(15_000)
+            reportWatch()
+        }
+    }
+    LaunchedEffect(ended, autoplayNext, nextItem?.id) {
+        if (!ended || !autoplayNext) return@LaunchedEffect
+        val next = nextItem ?: return@LaunchedEffect
+        reportWatch()
+        onPlayNeighbor?.invoke(next)
+    }
+    var prefetchSent by remember(session?.url, nextItem?.id) { mutableStateOf(false) }
+    LaunchedEffect(position, duration, prefetchNext, nextItem?.id, prefetchBeforeEndMinutes) {
+        if (!prefetchNext || prefetchSent) return@LaunchedEffect
+        val next = nextItem ?: return@LaunchedEffect
+        if (duration <= 0L) return@LaunchedEffect
+        val windowMs = prefetchBeforeEndMinutes.coerceAtLeast(1) * 60_000L
+        if (position >= (duration - windowMs).coerceAtLeast(0L)) {
+            prefetchSent = true
+            onPrefetchNeighbor?.invoke(next)
+        }
+    }
+    DisposableEffect(session?.url, item?.id) {
+        onDispose { reportWatch() }
+    }
 
-    val playbackKeys = hudExpanded && settingsFocused && menu == PlayerMenu.None
+    val sizeLabel = when (subtitleSize) {
+        0 -> "S"
+        2 -> "L"
+        else -> "M"
+    }
+    val cueSp = when (subtitleSize) {
+        0 -> 22.sp
+        2 -> 34.sp
+        else -> 28.sp
+    }
+    val subsOn = selectedRemoteId != null || (!textOff && textTracks.any { it.selected })
+    val audioLabel = audioTracks.firstOrNull { it.selected }?.label?.take(16) ?: "Audio"
+    val subLabel = shortSubLabel()
+    val hasNeighbor = nextItem != null || previousItem != null
+    val railCount = 3 + (if (previousItem != null) 1 else 0) + (if (nextItem != null) 1 else 0)
+
+    fun subtitleMenuActions(): List<() -> Unit> = buildList {
+        if (subsOn) {
+            add {
+                playerViewModel.nudgeSubtitleDelay(-250)
+                bumpHud(expanded = true)
+            }
+            add {
+                playerViewModel.nudgeSubtitleDelay(250)
+                bumpHud(expanded = true)
+            }
+            add {
+                playerViewModel.cycleSubtitleSize()
+                bumpHud(expanded = true)
+            }
+        }
+        add {
+            selectedRemoteId = null
+            playerViewModel.clearExternalSubtitle()
+            bumpHud(expanded = true)
+        }
+        textTracks.forEach { track ->
+            add {
+                selectedRemoteId = null
+                playerViewModel.selectTrack(track)
+                bumpHud(expanded = true)
+            }
+        }
+        remoteTracks.forEach { track ->
+            add { applyRemote(track) }
+        }
+    }
+
+    fun activateRail() {
+        when (railSel.coerceIn(0, (railCount - 1).coerceAtLeast(0))) {
+            0 -> togglePlay()
+            1 -> {
+                menu = if (menu == PlayerMenu.Audio) PlayerMenu.None else PlayerMenu.Audio
+                menuSel = 0
+                bumpHud(expanded = true)
+            }
+            2 -> {
+                menu = if (menu == PlayerMenu.Subtitles) PlayerMenu.None else PlayerMenu.Subtitles
+                menuSel = 0
+                bumpHud(expanded = true)
+            }
+            else -> {
+                val prevIdx = if (previousItem != null) 3 else -1
+                val nextIdx = when {
+                    previousItem != null && nextItem != null -> 4
+                    nextItem != null -> 3
+                    else -> -1
+                }
+                when (railSel) {
+                    prevIdx -> {
+                        val prev = previousItem ?: return
+                        reportWatch()
+                        onPlayNeighbor?.invoke(prev)
+                    }
+                    nextIdx -> {
+                        val next = nextItem ?: return
+                        reportWatch()
+                        onPlayNeighbor?.invoke(next)
+                    }
+                }
+            }
+        }
+    }
+
+    fun activateMenu() {
+        when (menu) {
+            PlayerMenu.None -> Unit
+            PlayerMenu.Audio -> {
+                val track = audioTracks.getOrNull(menuSel) ?: return
+                playerViewModel.selectTrack(track)
+                bumpHud(expanded = true)
+            }
+            PlayerMenu.Subtitles -> {
+                subtitleMenuActions().getOrNull(menuSel)?.invoke()
+            }
+        }
+    }
+
+    fun menuCount(): Int = when (menu) {
+        PlayerMenu.None -> 0
+        PlayerMenu.Audio -> audioTracks.size
+        PlayerMenu.Subtitles -> subtitleMenuActions().size
+    }
 
     Box(
         modifier = Modifier
@@ -202,6 +522,12 @@ fun PlayerScreen(
             .focusRequester(rootFocus)
             .focusable()
             .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // Never swallow system Back — BackHandler owns exit.
+                if (event.key == Key.Back || event.key == Key.Escape) {
+                    return@onPreviewKeyEvent false
+                }
+
                 val playPause = event.key == Key.DirectionCenter ||
                     event.key == Key.Enter ||
                     event.key == Key.NumPadEnter ||
@@ -212,103 +538,199 @@ fun PlayerScreen(
                 val right = event.key == Key.DirectionRight || event.key == Key.MediaFastForward
                 val down = event.key == Key.DirectionDown
                 val up = event.key == Key.DirectionUp
-                val handled = playPause || left || right || down || up
-                if (!handled) return@onPreviewKeyEvent false
-                if (event.type == KeyEventType.KeyUp) return@onPreviewKeyEvent true
-                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when {
-                    down -> {
-                        menu = PlayerMenu.None
-                        showHud(expanded = true)
-                        true
-                    }
-                    up -> {
-                        if (menu != PlayerMenu.None) {
-                            menu = PlayerMenu.None
-                        } else {
-                            hideHud()
+                val mediaNext = event.key == Key.MediaNext
+                val mediaPrev = event.key == Key.MediaPrevious
+
+                // Side settings panel: ↑/↓ move, OK select, ← closes.
+                if (menu != PlayerMenu.None) {
+                    val count = menuCount().coerceAtLeast(1)
+                    when {
+                        playPause -> {
+                            activateMenu()
+                            true
                         }
+                        left -> {
+                            menu = PlayerMenu.None
+                            bumpHud(expanded = true)
+                            true
+                        }
+                        up -> {
+                            if (menuSel <= 0) {
+                                menu = PlayerMenu.None
+                                bumpHud(expanded = true)
+                            } else {
+                                menuSel -= 1
+                                bumpHud(expanded = true)
+                            }
+                            true
+                        }
+                        down || right -> {
+                            menuSel = (menuSel + 1).coerceAtMost(count - 1)
+                            bumpHud(expanded = true)
+                            true
+                        }
+                        else -> false
+                    }.let { return@onPreviewKeyEvent it }
+                }
+
+                // Rail open: move selection / activate / collapse.
+                if (hudExpanded) {
+                    when {
+                        up -> {
+                            collapseHud()
+                            true
+                        }
+                        left -> {
+                            railSel = (railSel - 1).coerceAtLeast(0)
+                            bumpHud(expanded = true)
+                            true
+                        }
+                        right -> {
+                            railSel = (railSel + 1).coerceAtMost(railCount - 1)
+                            bumpHud(expanded = true)
+                            true
+                        }
+                        playPause -> {
+                            activateRail()
+                            true
+                        }
+                        down -> true
+                        else -> false
+                    }.let { return@onPreviewKeyEvent it }
+                }
+
+                // Transport mode (hidden or collapsed chrome).
+                when {
+                    !hudVisible -> {
+                        when {
+                            down -> { bumpHud(expanded = true); true }
+                            playPause -> { bumpHud(expanded = false); togglePlay(); true }
+                            left -> { bumpHud(expanded = false); seekBy(-10_000); true }
+                            right -> { bumpHud(expanded = false); seekBy(10_000); true }
+                            else -> false
+                        }
+                    }
+                    down -> { expandHud(); true }
+                    up -> { hideHud(); true }
+                    playPause -> { togglePlay(); true }
+                    left -> { seekBy(-10_000); true }
+                    right -> { seekBy(10_000); true }
+                    mediaNext && nextItem != null -> {
+                        reportWatch()
+                        onPlayNeighbor?.invoke(nextItem)
                         true
                     }
-                    playbackKeys && (left || right || playPause) -> false
-                    playPause -> {
-                        togglePlay()
-                        true
-                    }
-                    left -> {
-                        seekBy(-10_000)
-                        true
-                    }
-                    right -> {
-                        seekBy(10_000)
+                    mediaPrev && previousItem != null -> {
+                        reportWatch()
+                        onPlayNeighbor?.invoke(previousItem)
                         true
                     }
                     else -> false
                 }
             },
     ) {
-        PlayerSurface(
-            player = player,
-            modifier = Modifier
-                .fillMaxSize()
-                .focusProperties { canFocus = false },
-        )
+        if (session != null) {
+            PlayerSurface(
+                player = player,
+                modifier = Modifier.fillMaxSize().focusProperties { canFocus = false },
+            )
+        }
+
+        if (cueLines.isNotEmpty() && !splash && menu == PlayerMenu.None) {
+            val bottomPad = when {
+                hudExpanded -> 156.dp
+                hudVisible -> 120.dp
+                else -> 48.dp
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 80.dp, vertical = bottomPad)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                cueLines.forEach { line ->
+                    Text(
+                        line,
+                        color = Color.White,
+                        fontSize = cueSp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .padding(vertical = 2.dp)
+                            .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
+
+        if (splash) MediaLoadingScreen(item = item, title = title)
+
         playError?.let { message ->
             Text(
                 message,
                 style = CoogType.heroTagline,
                 color = Color(0xFFFF8B8B),
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 48.dp),
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 48.dp),
             )
         }
+
         AnimatedVisibility(
-            visible = hudVisible,
+            visible = !splash && menu != PlayerMenu.None,
+            enter = fadeIn(tween(140)) + slideInHorizontally(tween(180)) { it / 3 },
+            exit = fadeOut(tween(110)) + slideOutHorizontally(tween(150)) { it / 3 },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 36.dp, top = 48.dp, bottom = 120.dp),
+        ) {
+            SideSettingsPanel(
+                menu = menu,
+                menuSel = menuSel,
+                audioTracks = audioTracks,
+                textTracks = textTracks,
+                remoteTracks = remoteTracks,
+                remoteBusy = remoteBusy,
+                remoteError = remoteError,
+                textOff = !subsOn,
+                selectedRemoteId = selectedRemoteId,
+                subtitleDelayMs = subtitleDelayMs,
+                sizeLabel = sizeLabel,
+                subsOn = subsOn,
+                onActivate = { index ->
+                    menuSel = index
+                    activateMenu()
+                },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = hudVisible && !splash,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            Hud(
+            PlayerHud(
                 title = title,
                 positionMs = position,
                 durationMs = duration,
                 bufferedMs = when {
-                    session.method == "direct" && duration > 0 && !jobDownloading -> duration
+                    session?.method == "direct" && duration > 0 && !jobDownloading -> duration
                     else -> maxOf(jobBuffered, buffered)
                 },
-                remainingMs = if (jobDownloading && duration > 0) (duration - maxOf(jobBuffered, buffered)).coerceAtLeast(0L) else 0L,
+                remainingMs = if (jobDownloading && duration > 0) {
+                    (duration - maxOf(jobBuffered, buffered)).coerceAtLeast(0L)
+                } else 0L,
                 playing = playing,
                 expanded = hudExpanded,
-                menu = menu,
-                audioTracks = audioTracks,
-                textTracks = textTracks,
-                textOff = textOff,
-                settingsFocus = settingsFocus,
-                onSettingsFocus = { settingsFocused = it },
-                onTogglePlay = { togglePlay() },
-                onOpenAudio = {
-                    menu = if (menu == PlayerMenu.Audio) PlayerMenu.None else PlayerMenu.Audio
-                    showHud(expanded = true)
-                },
-                onOpenSubtitles = {
-                    menu = if (menu == PlayerMenu.Subtitles) PlayerMenu.None else PlayerMenu.Subtitles
-                    showHud(expanded = true)
-                },
-                onSelectAudio = {
-                    playerViewModel.selectTrack(it)
-                    menu = PlayerMenu.None
-                    showHud(expanded = true)
-                },
-                onSelectSubtitle = {
-                    playerViewModel.selectTrack(it)
-                    menu = PlayerMenu.None
-                    showHud(expanded = true)
-                },
-                onSubtitlesOff = {
-                    playerViewModel.setTextOff()
-                    menu = PlayerMenu.None
-                    showHud(expanded = true)
+                menuOpen = menu != PlayerMenu.None,
+                railSel = railSel,
+                audioLabel = audioLabel,
+                subLabel = subLabel,
+                hasNext = nextItem != null,
+                hasPrevious = previousItem != null,
+                onActivateRail = { index ->
+                    railSel = index
+                    activateRail()
                 },
             )
         }
@@ -316,7 +738,7 @@ fun PlayerScreen(
 }
 
 @Composable
-private fun Hud(
+private fun PlayerHud(
     title: String,
     positionMs: Long,
     durationMs: Long,
@@ -324,153 +746,411 @@ private fun Hud(
     remainingMs: Long,
     playing: Boolean,
     expanded: Boolean,
-    menu: PlayerMenu,
-    audioTracks: List<PlayerTrack>,
-    textTracks: List<PlayerTrack>,
-    textOff: Boolean,
-    settingsFocus: FocusRequester,
-    onSettingsFocus: (Boolean) -> Unit,
-    onTogglePlay: () -> Unit,
-    onOpenAudio: () -> Unit,
-    onOpenSubtitles: () -> Unit,
-    onSelectAudio: (PlayerTrack) -> Unit,
-    onSelectSubtitle: (PlayerTrack) -> Unit,
-    onSubtitlesOff: () -> Unit,
+    menuOpen: Boolean,
+    railSel: Int,
+    audioLabel: String,
+    subLabel: String,
+    hasNext: Boolean,
+    hasPrevious: Boolean,
+    onActivateRail: (Int) -> Unit,
 ) {
-    val dur = durationMs.coerceAtLeast(1L)
-    val audioLabel = audioTracks.firstOrNull { it.selected }?.label ?: "Audio"
-    val subLabel = when {
-        textOff || textTracks.isEmpty() -> "Off"
-        else -> textTracks.firstOrNull { it.selected }?.label ?: "Subtitles"
-    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(
                 Brush.verticalGradient(
-                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.84f)),
+                    0f to Color.Transparent,
+                    0.4f to Color.Black.copy(alpha = 0.42f),
+                    1f to Color.Black.copy(alpha = 0.92f),
                 ),
             )
-            .padding(horizontal = 48.dp, vertical = 22.dp),
+            .padding(start = 48.dp, end = 48.dp, top = 28.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(title, style = CoogType.heroTagline)
-        Text(
-            buildString {
-                append(if (playing) "Playing" else "Paused")
-                append("   ")
-                append(formatClock(positionMs))
-                append(" / ")
-                append(if (durationMs > 0) formatClock(durationMs) else "—")
-                if (remainingMs > 0 && remainingMs < durationMs) {
-                    append("   ·   ")
-                    append(formatClock(bufferedMs))
-                    append(" ready")
-                    formatDuration(remainingMs)?.let {
-                        append("   ·   ")
-                        append(it)
-                        append(" left")
-                    }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                style = CoogType.heroTagline.copy(fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false).padding(end = 20.dp),
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (!playing) {
+                    HudMetaPill(label = "Paused", tone = Color.White.copy(alpha = 0.88f))
                 }
-            },
-            style = CoogType.cardYear,
-            color = CoogTextMuted,
+                if (remainingMs > 0 && remainingMs < durationMs) {
+                    HudMetaPill(label = "${formatClock(bufferedMs)} ready", tone = CoogFetch)
+                }
+            }
+        }
+
+        HudScrubber(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            bufferedMs = bufferedMs,
+        )
+
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(90)),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HudRailButton(
+                    icon = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    label = if (playing) "Pause" else "Play",
+                    highlighted = !menuOpen && railSel == 0,
+                    onClick = { onActivateRail(0) },
+                )
+                HudRailButton(
+                    icon = Icons.Outlined.GraphicEq,
+                    label = audioLabel.take(12),
+                    highlighted = !menuOpen && railSel == 1,
+                    onClick = { onActivateRail(1) },
+                )
+                HudRailButton(
+                    icon = Icons.Outlined.ClosedCaption,
+                    label = subLabel,
+                    highlighted = !menuOpen && railSel == 2,
+                    onClick = { onActivateRail(2) },
+                )
+                if (hasPrevious) {
+                    HudRailButton(
+                        icon = Icons.Filled.SkipPrevious,
+                        label = "Prev",
+                        highlighted = !menuOpen && railSel == 3,
+                        onClick = { onActivateRail(3) },
+                    )
+                }
+                if (hasNext) {
+                    val nextSel = if (hasPrevious) 4 else 3
+                    HudRailButton(
+                        icon = Icons.Filled.SkipNext,
+                        label = "Next",
+                        highlighted = !menuOpen && railSel == nextSel,
+                        onClick = { onActivateRail(nextSel) },
+                    )
+                }
+            }
+        }
+
+        if (!expanded) {
+            Text(
+                "OK play/pause   ·   ← → seek   ·   ↓ more",
+                style = CoogType.cardYear,
+                color = CoogTextMuted.copy(alpha = 0.65f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HudMetaPill(label: String, tone: Color) {
+    Text(
+        label,
+        style = CoogType.chip.copy(fontSize = 10.sp, color = tone),
+        modifier = Modifier
+            .background(tone.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}
+
+@Composable
+private fun HudScrubber(
+    positionMs: Long,
+    durationMs: Long,
+    bufferedMs: Long,
+) {
+    val dur = durationMs.coerceAtLeast(1L)
+    val played = (positionMs.toFloat() / dur).coerceIn(0f, 1f)
+    val buffered = (bufferedMs.toFloat() / dur).coerceIn(0f, 1f)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            formatClock(positionMs),
+            style = CoogType.chip.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color.White),
+            modifier = Modifier.widthIn(min = 44.dp),
         )
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(4.dp)
-                .background(Color.White.copy(alpha = 0.16f), RoundedCornerShape(99.dp)),
+                .weight(1f)
+                .height(14.dp),
+            contentAlignment = Alignment.CenterStart,
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(fraction = (bufferedMs.toFloat() / dur).coerceIn(0f, 1f))
-                    .height(4.dp)
-                    .background(Color.White.copy(alpha = 0.32f), RoundedCornerShape(99.dp)),
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Color.White.copy(alpha = 0.16f)),
             )
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(fraction = (positionMs.toFloat() / dur).coerceIn(0f, 1f))
-                    .height(4.dp)
-                    .background(Color.White, RoundedCornerShape(99.dp)),
+                    .fillMaxWidth(fraction = buffered)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Color.White.copy(alpha = 0.30f)),
             )
-        }
-        if (expanded) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Box(
                 modifier = Modifier
-                    .padding(top = 8.dp)
-                    .onFocusChanged { onSettingsFocus(it.hasFocus) },
+                    .fillMaxWidth(fraction = played)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Color.White),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction = played)
+                    .height(14.dp),
+                contentAlignment = Alignment.CenterEnd,
             ) {
-                WhitePill(
-                    label = if (playing) "Pause" else "Play",
-                    onClick = onTogglePlay,
-                    modifier = Modifier.focusRequester(settingsFocus),
-                )
-                GhostButton(
-                    label = "Audio · $audioLabel",
-                    onClick = onOpenAudio,
-                )
-                GhostButton(
-                    label = "Subtitles · $subLabel",
-                    onClick = onOpenSubtitles,
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(Color.White, CircleShape),
                 )
             }
-            if (menu == PlayerMenu.Audio) {
-                TrackMenu(
-                    title = "Audio",
-                    items = audioTracks,
-                    onPick = onSelectAudio,
-                )
+        }
+        Text(
+            if (durationMs > 0) formatClock(durationMs) else "—",
+            style = CoogType.chip.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium, color = CoogTextSecondary),
+            textAlign = TextAlign.End,
+            modifier = Modifier.widthIn(min = 44.dp),
+        )
+    }
+}
+
+@Composable
+private fun HudRailButton(
+    icon: ImageVector,
+    label: String,
+    highlighted: Boolean,
+    onClick: () -> Unit,
+) {
+    val bg = if (highlighted) Color.White else Color.White.copy(alpha = 0.10f)
+    val fg = if (highlighted) Color(0xFF121214) else Color.White.copy(alpha = 0.92f)
+    Row(
+        modifier = Modifier
+            .height(32.dp)
+            .background(bg, RoundedCornerShape(50))
+            .padding(horizontal = 10.dp)
+            .focusProperties { canFocus = false },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
+        Text(
+            label,
+            color = fg,
+            style = CoogType.chip,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private val HudPanelBg = Color(0xFF1A1A1C)
+private val HudPanelStroke = Color(0x14FFFFFF)
+
+@Composable
+private fun SideSettingsPanel(
+    menu: PlayerMenu,
+    menuSel: Int,
+    audioTracks: List<PlayerTrack>,
+    textTracks: List<PlayerTrack>,
+    remoteTracks: List<SubtitleTrack>,
+    remoteBusy: Boolean,
+    remoteError: String,
+    textOff: Boolean,
+    selectedRemoteId: String?,
+    subtitleDelayMs: Int,
+    sizeLabel: String,
+    subsOn: Boolean,
+    onActivate: (Int) -> Unit,
+) {
+    data class RowItem(val label: String, val checked: Boolean, val checkable: Boolean = true)
+
+    if (menu == PlayerMenu.None) return
+
+    val isAudio = menu == PlayerMenu.Audio
+    val icon = if (isAudio) Icons.Outlined.GraphicEq else Icons.Outlined.ClosedCaption
+    val title = if (isAudio) "Audio" else "Subtitles"
+    val rows: List<RowItem>
+    val empty: String?
+    if (isAudio) {
+        rows = audioTracks.map { RowItem(it.label.take(32), checked = it.selected) }
+        empty = if (rows.isEmpty()) "No audio tracks" else null
+    } else {
+        rows = buildList {
+            if (subsOn) {
+                add(RowItem(formatDelay(subtitleDelayMs), checked = false, checkable = false))
+                add(RowItem("+250 ms", checked = false, checkable = false))
+                add(RowItem("Size $sizeLabel", checked = false, checkable = false))
             }
-            if (menu == PlayerMenu.Subtitles) {
-                TrackMenu(
-                    title = "Subtitles",
-                    items = textTracks,
-                    extraOff = true,
-                    offSelected = textOff,
-                    onPick = onSelectSubtitle,
-                    onOff = onSubtitlesOff,
-                )
+            add(RowItem("Off", checked = textOff))
+            textTracks.forEach { track ->
+                val active = selectedRemoteId == null && track.selected && !textOff
+                add(RowItem(trackDisplayLabel(track), checked = active))
+            }
+            remoteTracks.forEach { track ->
+                add(RowItem(remoteDisplayLabel(track), checked = selectedRemoteId == track.id))
+            }
+        }
+        empty = when {
+            remoteBusy && rows.size <= 1 -> "Searching…"
+            remoteError.isNotBlank() && remoteTracks.isEmpty() && textTracks.isEmpty() -> remoteError
+            rows.isEmpty() -> "No subtitles found"
+            else -> null
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .width(268.dp)
+            .heightIn(max = 420.dp)
+            .background(HudPanelBg, RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        HudPanelHeader(icon = icon, title = title)
+        when {
+            empty != null && rows.isEmpty() -> Text(
+                empty,
+                style = CoogType.cardYear,
+                color = if (empty == remoteError) Color(0xFFFF8B8B) else CoogTextMuted,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(vertical = 6.dp),
+            )
+            else -> {
+                if (empty != null && rows.size <= 1) {
+                    Text(empty, style = CoogType.cardYear, color = CoogTextMuted, modifier = Modifier.padding(vertical = 4.dp))
+                }
+                val toolCount = if (!isAudio && subsOn) 3 else 0
+                rows.forEachIndexed { index, row ->
+                    if (toolCount > 0 && index == toolCount) {
+                        Box(
+                            modifier = Modifier
+                                .padding(vertical = 4.dp)
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(HudPanelStroke),
+                        )
+                    }
+                    HudListRow(
+                        label = row.label,
+                        checked = row.checked,
+                        checkable = row.checkable,
+                        highlighted = menuSel == index,
+                        onClick = { onActivate(index) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TrackMenu(
-    title: String,
-    items: List<PlayerTrack>,
-    extraOff: Boolean = false,
-    offSelected: Boolean = false,
-    onPick: (PlayerTrack) -> Unit,
-    onOff: (() -> Unit)? = null,
-) {
-    Column(
-        modifier = Modifier
-            .padding(top = 8.dp)
-            .widthIn(max = 560.dp)
-            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+private fun HudPanelHeader(icon: ImageVector, title: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(bottom = 6.dp),
     ) {
-        Text(title, style = CoogType.shelfTitle)
-        if (items.isEmpty() && !extraOff) {
-            Text("No tracks in this file.", style = CoogType.cardYear, color = CoogTextMuted)
-        }
-        if (extraOff) {
-            if (offSelected) {
-                WhitePill(label = "Off", onClick = { onOff?.invoke() })
-            } else {
-                GhostButton(label = "Off", onClick = { onOff?.invoke() })
-            }
-        }
-        items.forEach { track ->
-            if (track.selected && !offSelected) {
-                WhitePill(label = track.label, onClick = { onPick(track) })
-            } else {
-                GhostButton(label = track.label, onClick = { onPick(track) })
-            }
-        }
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+        Text(
+            title,
+            style = CoogType.chip.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White),
+        )
     }
+}
+
+@Composable
+private fun HudListRow(
+    label: String,
+    checked: Boolean,
+    highlighted: Boolean,
+    onClick: () -> Unit,
+    checkable: Boolean = true,
+) {
+    val fg = when {
+        highlighted -> Color.White
+        checked -> Color.White.copy(alpha = 0.92f)
+        else -> Color.White.copy(alpha = 0.55f)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .background(
+                if (highlighted) Color.White.copy(alpha = 0.08f) else Color.Transparent,
+                RoundedCornerShape(6.dp),
+            )
+            .padding(horizontal = 4.dp)
+            .focusProperties { canFocus = false },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(modifier = Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+            if (checkable && checked) {
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
+        }
+        Text(
+            label,
+            color = fg,
+            fontSize = 12.sp,
+            fontWeight = if (highlighted || checked) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun formatDelay(ms: Int): String {
+    val sign = if (ms > 0) "+" else ""
+    return "Sync $sign${ms} ms"
+}
+
+private fun trackDisplayLabel(track: PlayerTrack): String {
+    val lang = track.language.trim().uppercase()
+    return when {
+        lang.isNotBlank() && lang != "UND" -> lang
+        else -> track.label.take(28)
+    }
+}
+
+private fun remoteDisplayLabel(track: SubtitleTrack): String {
+    val lang = track.language.trim().uppercase().ifBlank { "SUB" }
+    val source = when (track.source) {
+        "sidecar" -> "file"
+        "opensubtitles" -> "web"
+        else -> track.source.take(6)
+    }
+    val release = track.label
+        .substringAfter(" · ", "")
+        .substringBefore(" · OpenSubtitles")
+        .trim()
+        .take(14)
+    return if (release.isNotBlank()) "$lang · $release" else "$lang · $source"
 }

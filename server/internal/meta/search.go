@@ -52,7 +52,7 @@ func (e *Enricher) CatalogTitle(ctx context.Context, kind, imdb string) (Catalog
 		}
 	}
 	if kind == "series" || kind == "episode" {
-		if cover, _, err := e.CatalogShow(ctx, imdb); err == nil {
+		if cover, eps, err := e.CatalogShow(ctx, imdb); err == nil {
 			if cover.Title != "" {
 				item.Title = cover.Title
 			}
@@ -64,6 +64,11 @@ func (e *Enricher) CatalogTitle(ctx context.Context, kind, imdb string) (Catalog
 			}
 			if cover.BackdropURL != "" {
 				item.BackdropURL = cover.BackdropURL
+			}
+			if n := len(eps); n > 0 {
+				item.EpisodeCount = n
+			} else if cover.EpisodeCount > 0 {
+				item.EpisodeCount = cover.EpisodeCount
 			}
 		}
 	}
@@ -96,6 +101,9 @@ func (e *Enricher) CatalogTitle(ctx context.Context, kind, imdb string) (Catalog
 	}
 	if filled.Rating > 0 {
 		item.Rating = filled.Rating
+	}
+	if item.EpisodeCount == 0 && filled.EpisodeCount > 0 {
+		item.EpisodeCount = filled.EpisodeCount
 	}
 	item.TMDBID = movie.ID
 	item.Cast = creditsFromTMDB(movie.Credits)

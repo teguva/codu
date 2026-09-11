@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,16 +40,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.tv.material3.Button
-import androidx.tv.material3.ButtonDefaults
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
+import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import tv.coog.app.data.CastMember
 import tv.coog.app.data.CoogApi
+import tv.coog.app.data.JobItem
 import tv.coog.app.data.MediaItem
 import tv.coog.app.data.PersonSummary
 import tv.coog.app.ui.theme.CoogBgDeep
@@ -113,6 +116,7 @@ fun ShowDetailsScreen(
     onSources: (MediaItem) -> Unit,
     onOpenPerson: (PersonSummary) -> Unit,
     onOpenSimilar: (MediaItem) -> Unit,
+    jobs: List<JobItem> = emptyList(),
 ) {
     val server = LocalCoogServer.current
     val seed = remember(show.name) {
@@ -121,7 +125,10 @@ fun ShowDetailsScreen(
     var details by remember(show.name) { mutableStateOf(seed) }
     var similar by remember(show.name) { mutableStateOf<List<MediaItem>>(emptyList()) }
     val playFocus = remember { FocusRequester() }
-    val playable = show.episodes.firstOrNull { it.isLocal() } ?: show.episodes.firstOrNull()
+    // Prefer in-progress episode (continue overlay stamps positionMs), then local, then first.
+    val playable = show.episodes.firstOrNull { it.positionMs > 0 }
+        ?: show.episodes.firstOrNull { it.isLocal() }
+        ?: show.episodes.firstOrNull()
     LaunchedEffect(show.name) { runCatching { playFocus.requestFocus() } }
     LaunchedEffect(show.name, show.cover.imdbId, show.cover.tmdbId, seed.title, server.url, server.token) {
         val api = CoogApi(server.url, server.token)
@@ -144,6 +151,7 @@ fun ShowDetailsScreen(
     }
     TitleOverview(
         item = details,
+        jobs = jobs,
         onPlay = { onPlay(playable ?: details) },
         onSources = onSources,
         onOpenPerson = onOpenPerson,
@@ -153,14 +161,16 @@ fun ShowDetailsScreen(
         similar = similar,
         similarLabel = "Similar series",
         onOpenSimilar = onOpenSimilar,
+        episodes = show.episodes,
         bottomShelf = if (show.episodes.isNotEmpty()) {
             {
-                CatalogRow(
-                    label = "Episodes",
-                    items = show.episodes,
+                EpisodeSeasonShelf(
+                    episodes = show.episodes,
+                    seriesPoster = show.header?.posterUrl.orEmpty(),
+                    seriesBackdrop = show.header?.backdropUrl.orEmpty(),
                     onOpen = onPlay,
+                    jobs = jobs,
                     insetStart = 72.dp,
-                    compact = true,
                 )
             }
         } else {
@@ -174,6 +184,7 @@ fun ShowDetailsScreen(
                     onOpen = onOpenSimilar,
                     insetStart = 72.dp,
                     compact = true,
+                    library = show.episodes,
                 )
             }
         } else {
@@ -288,6 +299,8 @@ private fun CastCard(person: CastMember, onClick: () -> Unit) {
     }
 }
 
+private val ActionButtonHeight = 32.dp
+
 @Composable
 fun WhitePill(
     label: String,
@@ -295,40 +308,55 @@ fun WhitePill(
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
 ) {
-    Button(
+    Surface(
         onClick = onClick,
-        modifier = modifier,
-        colors = ButtonDefaults.colors(
-            containerColor = Color.White,
+        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = Color.White.copy(alpha = 0.88f),
             contentColor = Color(0xFF121214),
             focusedContainerColor = Color.White,
             focusedContentColor = Color(0xFF121214),
+            pressedContainerColor = Color.White.copy(alpha = 0.92f),
+            pressedContentColor = Color(0xFF121214),
         ),
-        scale = ButtonDefaults.scale(focusedScale = 1.04f),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
+        modifier = modifier.height(ActionButtonHeight),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(icon, contentDescription = null, tint = LocalContentColor.current, modifier = Modifier.size(16.dp))
             }
-            Text(label)
+            Text(label, color = LocalContentColor.current, fontSize = 14.sp)
         }
     }
 }
 
 @Composable
 fun GhostButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Button(
+    Surface(
         onClick = onClick,
-        modifier = modifier,
-        colors = ButtonDefaults.colors(
+        shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+        colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.10f),
             contentColor = Color.White,
             focusedContainerColor = Color.White,
             focusedContentColor = Color(0xFF121214),
+            pressedContainerColor = Color.White.copy(alpha = 0.92f),
+            pressedContentColor = Color(0xFF121214),
         ),
-        scale = ButtonDefaults.scale(focusedScale = 1.04f),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
+        modifier = modifier.height(ActionButtonHeight),
     ) {
-        Text(label)
+        Row(
+            modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, color = LocalContentColor.current, fontSize = 14.sp)
+        }
     }
 }
 
@@ -346,7 +374,10 @@ internal fun mergeDetails(local: MediaItem, remote: MediaItem): MediaItem = remo
     width = if (local.width > 0) local.width else remote.width,
     height = if (local.height > 0) local.height else remote.height,
     durationMs = if (local.durationMs > 0) local.durationMs else remote.durationMs,
+    positionMs = if (local.positionMs > 0) local.positionMs else remote.positionMs,
     runtimeMinutes = if (remote.runtimeMinutes > 0) remote.runtimeMinutes else local.runtimeMinutes,
+    episodeCount = if (remote.episodeCount > 0) remote.episodeCount else local.episodeCount,
+    tasteMatch = if (remote.tasteMatch > 0) remote.tasteMatch else local.tasteMatch,
     certification = remote.certification.ifBlank { local.certification },
     country = remote.country.ifBlank { local.country },
     director = if (remote.director.name.isNotBlank()) remote.director else local.director,

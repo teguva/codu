@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,10 +23,104 @@ func (s *Server) handleCatalogHome(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setCatalogError("")
 	localMovies, localSeries := s.imdbIndex()
+	scoredMovies := s.withMatchAll(mergeCatalogLibrary(movies, s.localCatalogItems("movie"), localMovies))
+	scoredSeries := s.withMatchAll(mergeCatalogLibrary(series, s.localCatalogItems("series"), localSeries))
+	cfg := s.tasteConfig()
+	cold := s.tasteProfile().ColdStart(cfg)
+	forYou := []meta.CatalogItem{}
+	if !cold {
+		forYou = topTasteItems(append(append([]meta.CatalogItem{}, scoredMovies...), scoredSeries...), 12)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"trendingMovies": attachLibrary(movies, localMovies),
-		"trendingSeries": attachLibrary(series, localSeries),
+		"trendingMovies": catalogListAsMedia(scoredMovies),
+		"trendingSeries": catalogListAsMedia(scoredSeries),
+		"forYou":         catalogListAsMedia(forYou),
+		"coldStart":      cold,
 	})
+}
+
+func (s *Server) handleCatalogBrowse(w http.ResponseWriter, r *http.Request) {
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind == "" {
+		kind = "movie"
+	}
+	sortKey := strings.TrimSpace(r.URL.Query().Get("sort"))
+	genreID, _ := strconv.Atoi(r.URL.Query().Get("genre"))
+	items, err := s.meta.BrowseCatalog(r.Context(), kind, sortKey, genreID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	localMovies, localSeries := s.imdbIndex()
+	local := localMovies
+	extrasKind := "movie"
+	if kind == "series" || kind == "tv" || kind == "episode" {
+		local = localSeries
+		extrasKind = "series"
+	}
+	merged := s.withMatchAll(mergeCatalogLibrary(items, s.localCatalogItems(extrasKind), local))
+	if tasteBrowseSort(sortKey) && !s.tasteProfile().ColdStart(s.tasteConfig()) {
+		merged = rankByTaste(merged)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": catalogListAsMedia(merged)})
+}
+
+func tasteBrowseSort(sortKey string) bool {
+	switch strings.ToLower(strings.TrimSpace(sortKey)) {
+	case "", "recommended", "trending", "for_you", "foryou":
+		return true
+	default:
+		return false
+	}
+}
+
+func rankByTaste(items []meta.CatalogItem) []meta.CatalogItem {
+	out := append([]meta.CatalogItem(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].MatchPercent != out[j].MatchPercent {
+			return out[i].MatchPercent > out[j].MatchPercent
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out
+}
+
+func topTasteItems(items []meta.CatalogItem, n int) []meta.CatalogItem {
+	ranked := rankByTaste(items)
+	seen := map[string]bool{}
+	out := make([]meta.CatalogItem, 0, n)
+	for _, item := range ranked {
+		key := strings.ToLower(strings.TrimSpace(item.ImdbID))
+		if key == "" {
+			key = item.ID
+		}
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Server) handleCatalogGenres(w http.ResponseWriter, r *http.Request) {
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind == "" {
+		kind = "movie"
+	}
+	genres, err := s.meta.CatalogGenres(r.Context(), kind)
+	if err != nil {
+		if !s.meta.TMDBEnabled() {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": genres})
 }
 
 func (s *Server) handleCatalogShow(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +149,10 @@ func (s *Server) handleCatalogShow(w http.ResponseWriter, r *http.Request) {
 	covers := attachLibrary([]meta.CatalogItem{cover}, localSeries)
 	cover = covers[0]
 	eps = s.attachEpisodeLibrary(eps, imdb)
+	eps = s.meta.OverlayEpisodeStills(r.Context(), imdb, eps)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"item":     catalogAsMedia(cover),
-		"episodes": catalogListAsMedia(eps),
+		"item":     s.mediaJSON(cover),
+		"episodes": s.mediaList(eps),
 	})
 }
 
@@ -98,6 +194,170 @@ func attachLibrary(items []meta.CatalogItem, local map[string]string) []meta.Cat
 	return out
 }
 
+func mergeCatalogLibrary(items []meta.CatalogItem, extras []meta.CatalogItem, local map[string]string) []meta.CatalogItem {
+	mergedLocal := map[string]string{}
+	for k, v := range local {
+		mergedLocal[k] = v
+	}
+	for _, extra := range extras {
+		id := strings.ToLower(strings.TrimSpace(extra.ImdbID))
+		if id != "" && extra.MediaID != "" {
+			if _, ok := mergedLocal[id]; !ok {
+				mergedLocal[id] = extra.MediaID
+			}
+		}
+	}
+	out := attachLibrary(items, mergedLocal)
+	seenImdb := map[string]bool{}
+	seenMedia := map[string]bool{}
+	byTitle := map[string][]int{}
+	for i, item := range out {
+		if id := strings.ToLower(strings.TrimSpace(item.ImdbID)); id != "" {
+			seenImdb[id] = true
+		}
+		if item.MediaID != "" {
+			seenMedia[item.MediaID] = true
+		}
+		key := catalogTitleKey(item.Title)
+		if key != "" {
+			byTitle[key] = append(byTitle[key], i)
+		}
+	}
+	for _, extra := range extras {
+		if id := strings.ToLower(strings.TrimSpace(extra.ImdbID)); id != "" && seenImdb[id] {
+			continue
+		}
+		if extra.MediaID != "" && seenMedia[extra.MediaID] {
+			continue
+		}
+		matched := false
+		for _, idx := range byTitle[catalogTitleKey(extra.Title)] {
+			if !yearsCompatible(out[idx].Year, extra.Year) {
+				continue
+			}
+			if !out[idx].InLibrary {
+				out[idx].InLibrary = true
+				if extra.MediaID != "" {
+					out[idx].MediaID = extra.MediaID
+				}
+			}
+			if extra.MediaID != "" {
+				seenMedia[extra.MediaID] = true
+			}
+			matched = true
+			break
+		}
+		if matched {
+			continue
+		}
+		extra.InLibrary = true
+		out = append(out, extra)
+		if id := strings.ToLower(strings.TrimSpace(extra.ImdbID)); id != "" {
+			seenImdb[id] = true
+		}
+		if extra.MediaID != "" {
+			seenMedia[extra.MediaID] = true
+		}
+	}
+	return out
+}
+
+func catalogTitleKey(title string) string {
+	t := strings.ToLower(strings.TrimSpace(title))
+	t = strings.ReplaceAll(t, ":", " ")
+	t = strings.ReplaceAll(t, "-", " ")
+	return strings.Join(strings.Fields(t), " ")
+}
+
+func yearsCompatible(a, b int) bool {
+	return a == 0 || b == 0 || a == b
+}
+
+func stripEpisodeLabel(title string) string {
+	title = strings.TrimSpace(title)
+	if i := strings.Index(title, " · "); i > 0 {
+		return strings.TrimSpace(title[:i])
+	}
+	return title
+}
+
+func (s *Server) localCatalogItems(kind string) []meta.CatalogItem {
+	items, err := s.store.ListMedia()
+	if err != nil {
+		return nil
+	}
+	if kind == "series" {
+		seen := map[string]bool{}
+		out := []meta.CatalogItem{}
+		for _, item := range items {
+			if item.Kind != "episode" {
+				continue
+			}
+			info, _ := s.meta.Peek(item.ID)
+			show := strings.TrimSpace(item.ShowTitle)
+			if show == "" {
+				show = item.Title
+			}
+			show = stripEpisodeLabel(show)
+			key := strings.ToLower(strings.TrimSpace(info.ImdbID))
+			if key == "" {
+				key = "title:" + catalogTitleKey(show)
+			}
+			if key == "title:" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			cat := localAsCatalog(item, info, "series")
+			if show != "" {
+				cat.Title = show
+			}
+			cat.Season = 0
+			cat.Episode = 0
+			out = append(out, cat)
+		}
+		return out
+	}
+	out := []meta.CatalogItem{}
+	for _, item := range items {
+		if item.Kind != "movie" {
+			continue
+		}
+		info, _ := s.meta.Peek(item.ID)
+		out = append(out, localAsCatalog(item, info, "movie"))
+	}
+	return out
+}
+
+func localAsCatalog(item store.MediaItem, info meta.Info, kind string) meta.CatalogItem {
+	title := item.Title
+	if kind == "series" && strings.TrimSpace(item.ShowTitle) != "" {
+		title = item.ShowTitle
+	}
+	year := item.Year
+	if info.Year > 0 {
+		year = info.Year
+	}
+	return meta.CatalogItem{
+		ID:             item.ID,
+		Kind:           kind,
+		Title:          title,
+		Year:           year,
+		Plot:           info.Plot,
+		PosterURL:      info.PosterURL,
+		BackdropURL:    info.BackdropURL,
+		ImdbID:         info.ImdbID,
+		MediaID:        item.ID,
+		InLibrary:      true,
+		Rating:         info.Rating,
+		Genres:         info.Genres,
+		TMDBID:         info.TMDBID,
+		RuntimeMinutes: info.RuntimeMinutes,
+		Certification:  info.Certification,
+		Country:        info.Country,
+		EpisodeCount:   info.EpisodeCount,
+	}
+}
+
 func catalogAsMedia(item meta.CatalogItem) map[string]any {
 	out := map[string]any{
 		"id":             item.ID,
@@ -122,6 +382,13 @@ func catalogAsMedia(item meta.CatalogItem) map[string]any {
 		"runtimeMinutes": item.RuntimeMinutes,
 		"certification":  item.Certification,
 		"country":        item.Country,
+		"genreIds":       item.GenreIDs,
+		"positionMs":     item.PositionMs,
+		"durationMs":     item.DurationMs,
+		"episodeCount":   item.EpisodeCount,
+	}
+	if item.MatchPercent > 0 {
+		out["matchPercent"] = item.MatchPercent
 	}
 	if item.Genres == nil {
 		out["genres"] = []string{}
@@ -144,6 +411,10 @@ func catalogListAsMedia(items []meta.CatalogItem) []map[string]any {
 }
 
 func (s *Server) findLocalByIMDB(imdb, kind string) (store.MediaItem, bool) {
+	return s.findLocalMedia(imdb, kind, 0, 0)
+}
+
+func (s *Server) findLocalMedia(imdb, kind string, season, episode int) (store.MediaItem, bool) {
 	imdb = strings.ToLower(strings.TrimSpace(imdb))
 	if imdb == "" {
 		return store.MediaItem{}, false
@@ -153,6 +424,8 @@ func (s *Server) findLocalByIMDB(imdb, kind string) (store.MediaItem, bool) {
 		return store.MediaItem{}, false
 	}
 	wantMovie := kind == "" || kind == "movie"
+	var first store.MediaItem
+	var hasFirst bool
 	for _, item := range items {
 		info, ok := s.meta.Peek(item.ID)
 		if !ok || !meta.IdentityConfirmed(item.Path, info) || strings.ToLower(info.ImdbID) != imdb {
@@ -162,8 +435,20 @@ func (s *Server) findLocalByIMDB(imdb, kind string) (store.MediaItem, bool) {
 			return item, true
 		}
 		if !wantMovie && item.Kind == "episode" {
-			return item, true
+			if season > 0 || episode > 0 {
+				if item.Season == season && item.Episode == episode {
+					return item, true
+				}
+				continue
+			}
+			if !hasFirst {
+				first = item
+				hasFirst = true
+			}
 		}
+	}
+	if hasFirst {
+		return first, true
 	}
 	return store.MediaItem{}, false
 }
@@ -244,13 +529,34 @@ func (s *Server) handleCatalogStreams(w http.ResponseWriter, r *http.Request) {
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	season, _ := strconv.Atoi(r.URL.Query().Get("season"))
 	episode, _ := strconv.Atoi(r.URL.Query().Get("episode"))
+	title := strings.TrimSpace(r.URL.Query().Get("title"))
+	year, _ := strconv.Atoi(r.URL.Query().Get("year"))
 	cfg := settings.Load(s.cfg.DataPath)
+	webCh := make(chan []streams.Candidate, 1)
+	go func() {
+		title := title
+		year := year
+		if title == "" || year == 0 {
+			if item, err := s.meta.CatalogTitle(r.Context(), kind, imdb); err == nil {
+				if title == "" {
+					title = item.Title
+				}
+				if year == 0 {
+					year = item.Year
+				}
+			}
+		}
+		webCh <- streams.ListWebCandidates(r.Context(), kind, title, year, season, episode)
+	}()
 	cands, err := streams.SearchTorrentio(r.Context(), cfg, kind, imdb, season, episode)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	cands = streams.CapCandidates(cands, 40)
+	if web := <-webCh; len(web) > 0 {
+		cands = append(cands, web...)
+	}
 	out := make([]map[string]any, 0, len(cands))
 	for _, c := range cands {
 		out = append(out, streams.PublicCandidate(c))
@@ -280,8 +586,8 @@ func (s *Server) handleCatalogSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	localMovies, localSeries := s.imdbIndex()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"movies": catalogListAsMedia(attachLibrary(result.Movies, localMovies)),
-		"series": catalogListAsMedia(attachLibrary(result.Series, localSeries)),
+		"movies": s.mediaList(attachLibrary(result.Movies, localMovies)),
+		"series": s.mediaList(attachLibrary(result.Series, localSeries)),
 		"people": result.People,
 	})
 }
@@ -303,7 +609,7 @@ func (s *Server) handleCatalogTitle(w http.ResponseWriter, r *http.Request) {
 		local = localSeries
 	}
 	item = attachLibrary([]meta.CatalogItem{item}, local)[0]
-	writeJSON(w, http.StatusOK, catalogAsMedia(item))
+	writeJSON(w, http.StatusOK, s.mediaJSON(item))
 }
 
 func (s *Server) handleCatalogSimilar(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +633,7 @@ func (s *Server) handleCatalogSimilar(w http.ResponseWriter, r *http.Request) {
 		local = localSeries
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": catalogListAsMedia(attachLibrary(items, local)),
+		"items": s.mediaList(attachLibrary(items, local)),
 	})
 }
 
@@ -349,7 +655,7 @@ func (s *Server) handleCatalogTMDB(w http.ResponseWriter, r *http.Request) {
 		local = localSeries
 	}
 	item = attachLibrary([]meta.CatalogItem{item}, local)[0]
-	writeJSON(w, http.StatusOK, catalogAsMedia(item))
+	writeJSON(w, http.StatusOK, s.mediaJSON(item))
 }
 
 func (s *Server) handleCatalogPerson(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +677,7 @@ func (s *Server) handleCatalogPerson(w http.ResponseWriter, r *http.Request) {
 			local = localSeries
 		}
 		c = attachLibrary([]meta.CatalogItem{c}, local)[0]
-		credits = append(credits, catalogAsMedia(c))
+		credits = append(credits, s.mediaJSON(c))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tmdbId":             person.TMDBID,
@@ -444,6 +750,9 @@ func (s *Server) handleStreamingSettings(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) writeStreamingSettings(w http.ResponseWriter) {
+	// Prefetch knobs: when autoDownloadNextEpisode is true, TV may POST
+	// /api/v1/playback/prefetch-next near end-of-playback using
+	// prefetchBeforeEndMinutes / prefetchCount.
 	cfg := settings.Load(s.cfg.DataPath)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saveToLibrary":            cfg.SaveToLibrary,

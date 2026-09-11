@@ -134,3 +134,23 @@ func shortCandidateLabel(cand Candidate) string {
 func containsFold(haystack, needle string) bool {
 	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
 }
+
+func ShouldFallbackLocal(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := strings.ToLower(err.Error())
+	if strings.Contains(e, "token") || strings.Contains(e, "rate-limited") || strings.Contains(e, "traffic limit") {
+		return false
+	}
+	for _, token := range []string{
+		"infringing", "copyright", "upload_forbidden", "forbidden_file", "blocklist",
+		"timed out", "not be cached", "does not have this file", "file_unavailable",
+		"magnet_error", "dead", "infringement stub", "stayed on torrentio",
+	} {
+		if strings.Contains(e, token) {
+			return true
+		}
+	}
+	return false
+}

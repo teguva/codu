@@ -1,6 +1,7 @@
 package playback
 
 import (
+	"strings"
 	"testing"
 
 	"coog/internal/store"
@@ -16,8 +17,22 @@ func TestNegotiateNoProfileDirect(t *testing.T) {
 	}
 }
 
-func TestNegotiateTrueHDTriesDirect(t *testing.T) {
+func TestNegotiateAwkwardAudioRemux(t *testing.T) {
 	caps := &Capabilities{VideoCodecs: []string{"hevc"}, AudioCodecs: []string{"aac"}}
+	got, err := Negotiate(store.MediaItem{CodecVideo: "hevc", CodecAudio: "truehd"}, caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != MethodRemux {
+		t.Fatalf("method %s reason %s", got.Method, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "truehd") {
+		t.Fatalf("reason %q", got.Reason)
+	}
+}
+
+func TestNegotiateSupportedAwkwardAudioDirect(t *testing.T) {
+	caps := &Capabilities{VideoCodecs: []string{"hevc"}, AudioCodecs: []string{"aac", "truehd"}}
 	got, err := Negotiate(store.MediaItem{CodecVideo: "hevc", CodecAudio: "truehd"}, caps)
 	if err != nil {
 		t.Fatal(err)

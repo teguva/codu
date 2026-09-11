@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"coog/internal/acquire"
@@ -17,23 +18,53 @@ import (
 	"coog/internal/store"
 )
 
-func catalogTrailerRef(id string) (imdb, kind string) {
+func parseCatalogRef(id string) (imdb, kind string, season, episode int) {
 	if !strings.HasPrefix(id, "catalog:") {
-		return "", ""
+		return "", "", 0, 0
 	}
 	rest := strings.TrimPrefix(id, "catalog:")
 	parts := strings.Split(rest, ":")
 	if len(parts) == 0 {
-		return "", ""
+		return "", "", 0, 0
 	}
 	imdb = strings.TrimSpace(parts[0])
 	if !strings.HasPrefix(imdb, "tt") {
-		return "", ""
+		return "", "", 0, 0
 	}
 	if len(parts) >= 3 {
-		return imdb, "series"
+		season, _ = strconv.Atoi(parts[1])
+		episode, _ = strconv.Atoi(parts[2])
+		return imdb, "series", season, episode
 	}
-	return imdb, "movie"
+	return imdb, "movie", 0, 0
+}
+
+func catalogTrailerRef(id string) (imdb, kind string) {
+	imdb, kind, _, _ = parseCatalogRef(id)
+	return imdb, kind
+}
+
+func applyCatalogMediaID(req *sessionRequest) {
+	imdb, kind, season, episode := parseCatalogRef(req.MediaID)
+	if imdb == "" {
+		return
+	}
+	if req.ImdbID == "" {
+		req.ImdbID = imdb
+	}
+	if req.Kind == "" {
+		if episode > 0 {
+			req.Kind = "episode"
+		} else {
+			req.Kind = kind
+		}
+	}
+	if req.Season == 0 {
+		req.Season = season
+	}
+	if req.Episode == 0 {
+		req.Episode = episode
+	}
 }
 
 func (s *Server) resolveTrailerMedia(ctx context.Context, id string) (item store.MediaItem, imdb, kind string, hasFile bool) {

@@ -28,13 +28,22 @@ type Candidate struct {
 	Quality   string `json:"quality,omitempty"`
 	Source    string `json:"source,omitempty"`
 	Provider  string `json:"provider,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 	FileIndex int    `json:"fileIndex,omitempty"`
 	Filename  string `json:"filename,omitempty"`
 }
 
 func PublicCandidate(c Candidate) map[string]any {
 	c = enrichCandidate(c)
-	return map[string]any{
+	kind := c.Kind
+	if kind == "" {
+		if c.Source == "web" {
+			kind = "web"
+		} else {
+			kind = "torrent"
+		}
+	}
+	out := map[string]any{
 		"infoHash":  c.InfoHash,
 		"title":     c.Title,
 		"name":      c.Name,
@@ -45,7 +54,12 @@ func PublicCandidate(c Candidate) map[string]any {
 		"sizeLabel": c.SizeLabel,
 		"source":    c.Source,
 		"provider":  c.Provider,
+		"kind":      kind,
 	}
+	if kind == "web" && httpURL(c.URL) != "" {
+		out["url"] = c.URL
+	}
+	return out
 }
 
 func SearchTorrentio(ctx context.Context, cfg settings.Streaming, kind, imdb string, season, episode int) ([]Candidate, error) {

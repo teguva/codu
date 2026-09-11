@@ -71,3 +71,24 @@ func Magnet(hashOrMagnet string) string {
 	}
 	return "magnet:?xt=urn:btih:" + h
 }
+
+var publicTrackers = []string{
+	"udp://tracker.opentrackr.org:1337/announce",
+	"udp://open.stealth.si:80/announce",
+	"udp://tracker.torrent.eu.org:451/announce",
+	"udp://exodus.desync.com:6969/announce",
+	"udp://open.tracker.cl:1337/announce",
+	"udp://tracker.moeking.me:6969/announce",
+	"http://tracker.openbittorrent.com:80/announce",
+}
+
+func MagnetWithTrackers(hashOrMagnet string) string {
+	m := Magnet(hashOrMagnet)
+	if m == "" {
+		return ""
+	}
+	for _, tr := range publicTrackers {
+		m += "&tr=" + url.QueryEscape(tr)
+	}
+	return m
+}

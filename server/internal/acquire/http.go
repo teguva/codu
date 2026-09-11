@@ -2,6 +2,7 @@ package acquire
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,11 +36,13 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 		err = r.runDebrid(ctx, &job)
 	case jobs.TypeHTTP:
 		err = r.runHTTP(ctx, &job)
+	case jobs.TypeTorrent:
+		err = r.runTorrent(ctx, &job)
 	default:
 		err = r.runYTDLP(ctx, &job)
 	}
 	if err != nil {
-		if cur, e := r.store.GetJob(job.ID); e == nil && (cur.Status == jobs.StatusCancelled || cur.Status == jobs.StatusPaused) {
+		if cur, e := r.store.GetJob(job.ID); e != nil || cur.Status == jobs.StatusCancelled || cur.Status == jobs.StatusPaused {
 			return
 		}
 		msg := events.Redact(err.Error())
@@ -64,6 +67,10 @@ func (r *Runner) watchCancel(ctx context.Context, cancel context.CancelFunc, id 
 		case <-tick.C:
 			job, err := r.store.GetJob(id)
 			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					cancel()
+					return
+				}
 				continue
 			}
 			if job.Status == jobs.StatusCancelled || job.Status == jobs.StatusPaused {
@@ -108,6 +115,14 @@ func (r *Runner) runDebrid(ctx context.Context, job *store.Job) error {
 	}
 	direct, err := streams.ResolveHTTP(ctx, cfg.RealDebridToken, best)
 	if err != nil {
+		if streams.ShouldFallbackLocal(err) && best.InfoHash != "" {
+			job.LogTail = events.Redact("Real-Debrid unavailable, downloading torrent locally: " + err.Error())
+			job.Type = jobs.TypeTorrent
+			job.InfoHash = best.InfoHash
+			job.Status = jobs.StatusDownloading
+			_ = r.store.UpdateJob(*job)
+			return r.runTorrent(ctx, job)
+		}
 		job.LogTail = events.Redact(err.Error())
 		return err
 	}
@@ -118,6 +133,10 @@ func (r *Runner) runDebrid(ctx context.Context, job *store.Job) error {
 }
 
 func (r *Runner) runHTTP(ctx context.Context, job *store.Job) error {
+	return r.pullAndPack(ctx, job, job.URL, "")
+}
+
+func (r *Runner) pullAndPack(ctx context.Context, job *store.Job, mediaURL, referer string) error {
 	work := jobs.Dir(r.cfg.DataPath, job.ID)
 	hls := jobs.HLSDir(r.cfg.DataPath, job.ID)
 	if err := os.MkdirAll(hls, 0o755); err != nil {
@@ -150,18 +169,25 @@ func (r *Runner) runHTTP(ctx context.Context, job *store.Job) error {
 		_ = r.store.UpdateJob(*job)
 	}
 	var bytesTotal int64
-	go r.inspectHTTPSource(ctx, job, &bytesTotal, &mu, save)
+	go r.inspectHTTPSource(ctx, job, mediaURL, &bytesTotal, &mu, save)
 
 	pr, pw := io.Pipe()
-	pull := exec.CommandContext(ctx, r.cfg.FFmpeg,
+	pullArgs := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-		"-i", job.URL,
+		"-user_agent", streams.WebUserAgent(),
+	}
+	if referer != "" {
+		pullArgs = append(pullArgs, "-referer", referer)
+	}
+	pullArgs = append(pullArgs,
+		"-i", mediaURL,
 		"-map", "0",
 		"-c", "copy",
 		"-f", "mpegts",
 		"pipe:1",
 	)
+	pull := exec.CommandContext(ctx, r.cfg.FFmpeg, pullArgs...)
 	pull.Stdout = io.MultiWriter(source, pw)
 	pull.Stderr = io.MultiWriter(os.Stderr, tail)
 
@@ -260,14 +286,14 @@ func parseImdbRef(ref, fallback string) (imdb string, season, episode int, kind 
 	return imdb, season, episode, kind
 }
 
-func (r *Runner) inspectHTTPSource(ctx context.Context, job *store.Job, bytesTotal *int64, mu *sync.Mutex, save func()) {
-	if n := httpContentLength(ctx, job.URL); n > 0 {
+func (r *Runner) inspectHTTPSource(ctx context.Context, job *store.Job, mediaURL string, bytesTotal *int64, mu *sync.Mutex, save func()) {
+	if n := httpContentLength(ctx, mediaURL); n > 0 {
 		atomic.StoreInt64(bytesTotal, n)
 	}
 	if r.prober == nil {
 		return
 	}
-	ms, err := r.prober.Duration(ctx, job.URL)
+	ms, err := r.prober.Duration(ctx, mediaURL)
 	if err != nil || ms <= 0 {
 		return
 	}

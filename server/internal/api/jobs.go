@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"coog/internal/events"
 	"coog/internal/jobs"
 	"coog/internal/playback"
 	"coog/internal/store"
@@ -40,6 +41,16 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]store.Job, 0, len(list))
 		for _, job := range list {
+			switch job.Status {
+			case jobs.StatusCancelled:
+				// Legacy cancelled rows: treat like delete.
+				jobs.Cleanup(s.cfg.DataPath, job.ID)
+				_ = s.store.DeleteJob(job.ID)
+				continue
+			case jobs.StatusFinished:
+				// Finished downloads leave library files; drop the queue row from the list.
+				continue
+			}
 			out = append(out, publicJob(job))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": out})
@@ -62,18 +73,27 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "" {
 		req.Type = jobs.TypeYTDLP
 	}
-	if req.Type != jobs.TypeYTDLP && req.Type != jobs.TypeHTTP && req.Type != jobs.TypeDebrid {
+	if req.Type != jobs.TypeYTDLP && req.Type != jobs.TypeHTTP && req.Type != jobs.TypeDebrid && req.Type != jobs.TypeTorrent {
 		writeError(w, http.StatusBadRequest, "unsupported job type")
 		return
 	}
-	if req.Type == jobs.TypeDebrid {
+	if req.Type == jobs.TypeDebrid || req.Type == jobs.TypeTorrent {
 		if req.ImdbID == "" && strings.HasPrefix(req.URL, "imdb:") {
 			req.ImdbID = strings.TrimPrefix(req.URL, "imdb:")
 			if i := strings.Index(req.ImdbID, ":"); i > 0 {
 				req.ImdbID = req.ImdbID[:i]
 			}
 		}
-		if req.ImdbID == "" && req.InfoHash == "" {
+		if req.Type == jobs.TypeTorrent {
+			if req.InfoHash == "" {
+				req.InfoHash = streams.InfoHash(req.URL)
+			}
+			if req.InfoHash == "" {
+				writeError(w, http.StatusBadRequest, "infoHash is required")
+				return
+			}
+		}
+		if req.Type == jobs.TypeDebrid && req.ImdbID == "" && req.InfoHash == "" {
 			writeError(w, http.StatusBadRequest, "imdbId or infoHash is required")
 			return
 		}
@@ -98,7 +118,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			req.URL = "imdb:" + resource
 		}
 	}
-	if req.URL == "" && req.Type != jobs.TypeDebrid {
+	if req.URL == "" && req.Type != jobs.TypeDebrid && req.Type != jobs.TypeTorrent {
 		writeError(w, http.StatusBadRequest, "url is required")
 		return
 	}
@@ -144,6 +164,8 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "job already finished")
 		return
 	}
+	// Mark cancelled first so the worker kills ffmpeg/yt-dlp, then remove the
+	// queue row and partial workdir. Library files are never created until finish.
 	job.Status = jobs.StatusCancelled
 	job.Error = "cancelled"
 	job.Ready = false
@@ -151,7 +173,10 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	jobs.Cleanup(s.cfg.DataPath, job.ID)
+	_ = s.store.DeleteJob(job.ID)
 	s.note("warn", "api", "job.cancelled", "cancelled "+job.Title, job.ID, job.MediaID)
+	s.hub.Broadcast(events.Event{Type: "job.cancelled", Job: publicJob(job)})
 	writeJSON(w, http.StatusOK, publicJob(job))
 }
 
@@ -190,7 +215,7 @@ func (s *Server) handleJobRetry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if job.Status != jobs.StatusError && job.Status != jobs.StatusCancelled && job.Status != jobs.StatusPaused {
+	if job.Status != jobs.StatusError && job.Status != jobs.StatusPaused {
 		writeError(w, http.StatusConflict, "job is not retryable")
 		return
 	}

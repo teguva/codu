@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	TypeYTDLP  = "ytdlp"
-	TypeHTTP   = "http"
-	TypeDebrid = "debrid"
+	TypeYTDLP   = "ytdlp"
+	TypeHTTP    = "http"
+	TypeDebrid  = "debrid"
+	TypeTorrent = "torrent"
 
 	StatusQueued      = "queued"
 	StatusDownloading = "downloading"
@@ -27,6 +28,15 @@ const (
 
 func Dir(dataPath, id string) string {
 	return filepath.Join(dataPath, "jobs", id)
+}
+
+// Cleanup removes the job work directory (partial downloads + progressive HLS).
+// Library files under COOG_LIBRARY_PATH are never touched here.
+func Cleanup(dataPath, id string) {
+	if strings.TrimSpace(dataPath) == "" || strings.TrimSpace(id) == "" {
+		return
+	}
+	_ = os.RemoveAll(Dir(dataPath, id))
 }
 
 func HLSDir(dataPath, id string) string {

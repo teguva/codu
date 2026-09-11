@@ -4,6 +4,8 @@
     { id: 'activity', label: 'Activity' },
     { id: 'downloads', label: 'Downloads' },
     { id: 'library', label: 'Library' },
+    { id: 'taste', label: 'Match' },
+    { id: 'subtitles', label: 'Subtitles' },
     { id: 'streaming', label: 'Streaming' },
   ];
   const PROVIDERS = [
@@ -14,6 +16,7 @@
 
   let page = $state(localStorage.getItem('coog-admin-page') || 'overview');
   let token = $state(localStorage.getItem('coog-token') || '');
+  let authStatus = $state('unknown'); // unknown | ok | unauthorized | error
   let health = $state(null);
   let healthError = $state('');
   let stats = $state(null);
@@ -26,17 +29,36 @@
   let expanded = $state({});
   let items = $state([]);
   let selected = $state(null);
+  let rematchImdb = $state('');
+  let matchBusy = $state(false);
+  let matchError = $state('');
   let scanning = $state(false);
   let scanResult = $state(null);
   let loadError = $state('');
   let libQuery = $state('');
   let libKind = $state('all');
   let streaming = $state(null);
+  let streamingSaved = $state(null);
   let rdToken = $state('');
   let streamBusy = $state(false);
   let streamError = $state('');
   let deleting = $state(false);
   let deleteError = $state('');
+  let taste = $state(null);
+  let tasteError = $state('');
+  let tasteBusy = $state(false);
+  let subSettings = $state(null);
+  let subSaved = $state(null);
+  let subError = $state('');
+  let subBusy = $state(false);
+  let subApiKey = $state('');
+  let subPassword = $state('');
+  let subLangs = $state('en');
+  let continueItems = $state([]);
+  let continueError = $state('');
+  let continueBusy = $state('');
+  let toasts = $state([]);
+  let toastSeq = 0;
 
   const headers = () => {
     const h = { Accept: 'application/json' };
@@ -47,6 +69,14 @@
   function go(id) {
     page = id;
     localStorage.setItem('coog-admin-page', id);
+  }
+
+  function toast(message, kind = 'ok') {
+    const id = ++toastSeq;
+    toasts = [...toasts, { id, message, kind }];
+    setTimeout(() => {
+      toasts = toasts.filter((t) => t.id !== id);
+    }, 4200);
   }
 
   function saveToken() {
@@ -68,11 +98,19 @@
   async function refreshStats() {
     try {
       const res = await fetch('/api/v1/server/stats', { headers: headers() });
+      if (res.status === 401) {
+        authStatus = 'unauthorized';
+        stats = null;
+        statsError = '401 unauthorized';
+        return;
+      }
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       stats = await res.json();
       statsError = '';
+      authStatus = 'ok';
     } catch (err) {
       statsError = String(err);
+      if (authStatus !== 'unauthorized') authStatus = 'error';
     }
   }
 
@@ -111,14 +149,183 @@
     }
   }
 
+  async function refreshContinue() {
+    try {
+      const res = await fetch('/api/v1/catalog/continue', { headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const data = await res.json();
+      continueItems = data.items || [];
+      continueError = '';
+    } catch (err) {
+      continueError = String(err);
+    }
+  }
+
+  async function clearContinueItem(item) {
+    const key = item.id || `${item.imdbId}:${item.mediaId}`;
+    continueBusy = key;
+    continueError = '';
+    try {
+      const res = await fetch('/api/v1/playback/progress/clear', {
+        method: 'POST',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imdbId: item.imdbId || '',
+          tmdbId: item.tmdbId || 0,
+          kind: item.kind || 'movie',
+          title: item.title || item.showTitle || '',
+          year: item.year || 0,
+          season: item.season || 0,
+          episode: item.episode || 0,
+          mediaId: item.mediaId || '',
+        }),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      toast('Cleared continue watching');
+      await refreshContinue();
+    } catch (err) {
+      continueError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      continueBusy = '';
+    }
+  }
+
+  function snapshotStreaming(cfg) {
+    if (!cfg) return null;
+    return JSON.stringify({
+      saveToLibrary: !!cfg.saveToLibrary,
+      autoplayNextEpisode: !!cfg.autoplayNextEpisode,
+      autoDownloadNextEpisode: !!cfg.autoDownloadNextEpisode,
+      includeWebStreams: !!cfg.includeWebStreams,
+      prefetchBeforeEndMinutes: cfg.prefetchBeforeEndMinutes,
+      prefetchCount: cfg.prefetchCount,
+      continueOverlaySeconds: cfg.continueOverlaySeconds,
+      torrentioProviders: [...(cfg.torrentioProviders || [])].sort(),
+      excludeQualities: [...(cfg.excludeQualities || [])].sort(),
+    });
+  }
+
+  function snapshotSubtitles(cfg, langs) {
+    if (!cfg) return null;
+    return JSON.stringify({
+      enabled: !!cfg.enabled,
+      autoLoad: !!cfg.autoLoad,
+      preferEmbedded: !!cfg.preferEmbedded,
+      username: cfg.username || '',
+      userAgent: cfg.userAgent || '',
+      languages: langs,
+    });
+  }
+
   async function refreshStreaming() {
     try {
       const res = await fetch('/api/v1/settings/streaming', { headers: headers() });
       if (!res.ok) throw new Error(`${res.status}`);
       streaming = await res.json();
+      streamingSaved = snapshotStreaming(streaming);
+      rdToken = '';
       streamError = '';
     } catch (err) {
       streamError = String(err);
+    }
+  }
+
+  async function refreshTaste() {
+    try {
+      const res = await fetch('/api/v1/taste', { headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      taste = await res.json();
+      tasteError = '';
+    } catch (err) {
+      tasteError = String(err);
+    }
+  }
+
+  async function saveTaste(patch) {
+    tasteBusy = true;
+    tasteError = '';
+    try {
+      const res = await fetch('/api/v1/taste', {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      taste = await res.json();
+      toast('Match settings saved');
+    } catch (err) {
+      tasteError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      tasteBusy = false;
+    }
+  }
+
+  async function rebuildTaste() {
+    tasteBusy = true;
+    tasteError = '';
+    try {
+      const res = await fetch('/api/v1/taste/rebuild', { method: 'POST', headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      taste = await res.json();
+      toast('Taste profile rebuilt');
+    } catch (err) {
+      tasteError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      tasteBusy = false;
+    }
+  }
+
+  async function refreshSubtitles() {
+    try {
+      const res = await fetch('/api/v1/settings/subtitles', { headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const data = await res.json();
+      subSettings = data.settings || null;
+      subLangs = (subSettings?.languages || ['en']).join(', ');
+      subSaved = snapshotSubtitles(subSettings, subLangs);
+      subApiKey = '';
+      subPassword = '';
+      subError = '';
+    } catch (err) {
+      subError = String(err);
+    }
+  }
+
+  async function saveSubtitles() {
+    subBusy = true;
+    subError = '';
+    try {
+      const body = {
+        enabled: !!subSettings?.enabled,
+        autoLoad: !!subSettings?.autoLoad,
+        preferEmbedded: !!subSettings?.preferEmbedded,
+        username: subSettings?.username || '',
+        userAgent: subSettings?.userAgent || '',
+        languages: subLangs,
+      };
+      if (subApiKey.trim()) body.apiKey = subApiKey.trim();
+      if (subPassword.trim()) body.password = subPassword.trim();
+      const res = await fetch('/api/v1/settings/subtitles', {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const data = await res.json();
+      subSettings = data.settings || null;
+      subLangs = (subSettings?.languages || ['en']).join(', ');
+      subSaved = snapshotSubtitles(subSettings, subLangs);
+      subApiKey = '';
+      subPassword = '';
+      toast('Subtitles settings saved');
+    } catch (err) {
+      subError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      subBusy = false;
     }
   }
 
@@ -130,6 +337,9 @@
       refreshJobs(),
       refreshLibrary(),
       refreshStreaming(),
+      refreshTaste(),
+      refreshSubtitles(),
+      refreshContinue(),
     ]);
   }
 
@@ -153,6 +363,8 @@
     const res = await fetch(`/api/v1/library/${id}`, { headers: headers() });
     selected = await res.json();
     deleteError = '';
+    matchError = '';
+    rematchImdb = selected?.imdbId || '';
   }
 
   async function removeSelected(scope) {
@@ -179,6 +391,53 @@
     }
   }
 
+  async function ignoreSelected() {
+    if (!selected?.id || matchBusy) return;
+    matchBusy = true;
+    matchError = '';
+    try {
+      const res = await fetch(`/api/v1/library/${selected.id}/ignore`, { method: 'POST', headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      selected = await res.json();
+      toast('Marked as ignored');
+      await refreshLibrary();
+    } catch (err) {
+      matchError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      matchBusy = false;
+    }
+  }
+
+  async function rematchSelected(withImdb) {
+    if (!selected?.id || matchBusy) return;
+    matchBusy = true;
+    matchError = '';
+    try {
+      const body = {};
+      if (withImdb) {
+        const id = rematchImdb.trim();
+        if (!id) throw new Error('Enter an IMDB id (tt…)');
+        body.imdbId = id;
+      }
+      const res = await fetch(`/api/v1/library/${selected.id}/rematch`, {
+        method: 'POST',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      selected = await res.json();
+      rematchImdb = selected?.imdbId || rematchImdb;
+      toast(withImdb ? 'Matched to IMDB id' : 'Rematch finished');
+      await refreshLibrary();
+    } catch (err) {
+      matchError = String(err);
+      toast(String(err), 'error');
+    } finally {
+      matchBusy = false;
+    }
+  }
+
   async function enqueue() {
     const url = jobUrl.trim();
     if (!url || jobBusy) return;
@@ -195,25 +454,27 @@
       await refreshJobs();
     } catch (err) {
       jobError = String(err);
+      toast(String(err), 'error');
     } finally {
       jobBusy = false;
     }
   }
 
-  async function cancelJob(id) {
-    await fetch(`/api/v1/jobs/${id}/cancel`, { method: 'POST', headers: headers() });
-    await refreshJobs();
+  async function jobAction(id, action) {
+    jobError = '';
+    try {
+      const res = await fetch(`/api/v1/jobs/${id}/${action}`, { method: 'POST', headers: headers() });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      await refreshJobs();
+    } catch (err) {
+      jobError = String(err);
+      toast(`${action} failed: ${err}`, 'error');
+    }
   }
 
-  async function pauseJob(id) {
-    await fetch(`/api/v1/jobs/${id}/pause`, { method: 'POST', headers: headers() });
-    await refreshJobs();
-  }
-
-  async function retryJob(id) {
-    await fetch(`/api/v1/jobs/${id}/retry`, { method: 'POST', headers: headers() });
-    await refreshJobs();
-  }
+  async function cancelJob(id) { await jobAction(id, 'cancel'); }
+  async function pauseJob(id) { await jobAction(id, 'pause'); }
+  async function retryJob(id) { await jobAction(id, 'retry'); }
 
   async function saveStreaming() {
     streamBusy = true;
@@ -228,9 +489,12 @@
       });
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
       streaming = await res.json();
+      streamingSaved = snapshotStreaming(streaming);
       rdToken = '';
+      toast('Streaming settings saved');
     } catch (err) {
       streamError = String(err);
+      toast(String(err), 'error');
     } finally {
       streamBusy = false;
     }
@@ -304,6 +568,26 @@
     }),
   );
 
+  const streamDirty = $derived(
+    !!streaming && (
+      snapshotStreaming(streaming) !== streamingSaved || !!rdToken.trim()
+    ),
+  );
+
+  const subDirty = $derived(
+    !!subSettings && (
+      snapshotSubtitles(subSettings, subLangs) !== subSaved
+      || !!subApiKey.trim()
+      || !!subPassword.trim()
+    ),
+  );
+
+  const tokenPresent = $derived(!!(token || localStorage.getItem('coog-token')));
+
+  const needsMatchActions = $derived(
+    ['unmatched', 'suggested'].includes(String(selected?.matchStatus || '').toLowerCase()),
+  );
+
   $effect(() => {
     refreshAll();
     const tick = setInterval(() => {
@@ -311,6 +595,7 @@
       refreshStats();
       if (page === 'activity') refreshActivity();
       if (page === 'downloads' || page === 'overview') refreshJobs();
+      if (page === 'overview') refreshContinue();
     }, 8000);
     return () => clearInterval(tick);
   });
@@ -353,6 +638,21 @@
       Token
       <input bind:value={token} placeholder="COOG_AUTH_TOKEN" onchange={saveToken} />
     </label>
+    <div class="auth-status" class:ok={authStatus === 'ok'} class:bad={authStatus === 'unauthorized' || authStatus === 'error'}>
+      {#if authStatus === 'ok'}
+        <span class="dot ok"></span>
+        <span>authorized</span>
+      {:else if authStatus === 'unauthorized'}
+        <span class="dot bad"></span>
+        <span>401 — set COOG_AUTH_TOKEN on the server and paste it here</span>
+      {:else if authStatus === 'error'}
+        <span class="dot bad"></span>
+        <span>API unreachable</span>
+      {:else}
+        <span class="dot"></span>
+        <span>checking auth…</span>
+      {/if}
+    </div>
     <div class="health">
       <span class="dot" class:ok={health?.status === 'ok'} class:bad={!!healthError}></span>
       {#if health}
@@ -363,16 +663,22 @@
     </div>
   </aside>
 
-  <main>
+  <main class:has-savebar={(page === 'streaming' && streamDirty) || (page === 'subtitles' && subDirty)}>
     {#if page === 'overview'}
       <header>
         <div>
           <h2>Overview</h2>
           <p class="muted">Worker, Real-Debrid, jobs, and catalog health in one place.</p>
         </div>
-        <button class="ghost" onclick={refreshStats}>Refresh</button>
+        <button class="ghost" onclick={() => { refreshStats(); refreshContinue(); }}>Refresh</button>
       </header>
       {#if statsError}<p class="error">{statsError}</p>{/if}
+      {#if authStatus === 'unauthorized'}
+        <div class="banner warn">
+          <strong>Unauthorized</strong>
+          <span>The API returned 401. Export <code>COOG_AUTH_TOKEN</code> on the host and paste the same value in the sidebar Token field.</span>
+        </div>
+      {/if}
       <div class="cards">
         <article class="card">
           <h3>API</h3>
@@ -436,6 +742,48 @@
           {/if}
         </article>
       </div>
+
+      <h3>Config</h3>
+      <article class="card config-card">
+        <dl class="facts">
+          <div><dt>Library path</dt><dd><code>{stats?.libraryPath || '—'}</code></dd></div>
+          <div><dt>Data path</dt><dd><code>{stats?.dataPath || '—'}</code></dd></div>
+          <div><dt>Admin token</dt><dd>{tokenPresent ? 'present in localStorage' : 'not set in browser'}</dd></div>
+          <div><dt>Auth probe</dt><dd class:bad={authStatus === 'unauthorized'}>{authStatus}</dd></div>
+          <div><dt>Catalog / TMDB</dt><dd class:bad={!!stats?.catalogError}>{stats?.catalogError || 'ok'}</dd></div>
+        </dl>
+      </article>
+
+      <h3>Continue watching</h3>
+      {#if continueError}<p class="error">{continueError}</p>{/if}
+      <div class="transfers">
+        {#each continueItems as item}
+          <article class="transfer">
+            <div class="transfer-main">
+              <strong>{item.showTitle ? `${item.showTitle} — ${item.title}` : item.title}</strong>
+              <div class="transfer-meta">
+                <span class="pill">{item.kind}</span>
+                {#if item.season || item.episode}
+                  <span class="muted">S{item.season}E{item.episode}</span>
+                {/if}
+                {#if item.positionMs}
+                  <span class="muted">{fmtClock(item.positionMs)}{#if item.durationMs} / {fmtClock(item.durationMs)}{/if}</span>
+                {/if}
+                {#if item.imdbId}<span class="muted">{item.imdbId}</span>{/if}
+              </div>
+            </div>
+            <div class="transfer-actions">
+              <button
+                class="ghost danger"
+                disabled={continueBusy === (item.id || `${item.imdbId}:${item.mediaId}`)}
+                onclick={() => clearContinueItem(item)}
+              >Clear</button>
+            </div>
+          </article>
+        {:else}
+          <p class="muted">No continue-watching entries.</p>
+        {/each}
+      </div>
     {/if}
 
     {#if page === 'activity'}
@@ -469,7 +817,7 @@
       <header>
         <div>
           <h2>Downloads</h2>
-          <p class="muted">Live over WebSocket. Cancel kills the in-flight ffmpeg/yt-dlp process. Retry re-queues a failed job.</p>
+          <p class="muted">Live over WebSocket. Cancel removes the transfer and its temp files. Finished downloads leave the library and drop out of this list.</p>
         </div>
         <button class="ghost" onclick={refreshJobs}>Refresh</button>
       </header>
@@ -518,7 +866,7 @@
               {/if}
             </div>
             <div class="transfer-actions">
-              {#if job.status === 'error' || job.status === 'cancelled' || job.status === 'paused'}
+              {#if job.status === 'error' || job.status === 'paused'}
                 <button class="ghost" onclick={() => retryJob(job.id)}>{job.status === 'paused' ? 'Resume' : 'Retry'}</button>
               {/if}
               {#if job.status === 'queued' || job.status === 'downloading' || job.status === 'ready'}
@@ -595,6 +943,22 @@
           <p>video {selected.codecVideo || '—'} · audio {selected.codecAudio || '—'} · {selected.contentType || '—'}</p>
           {#if selected.probeError}<p class="error">{selected.probeError}</p>{/if}
           <p><a href={selected.streamUrl || `/api/v1/media/${selected.id}/stream`}>playable stream</a></p>
+          {#if matchError}<p class="error">{matchError}</p>{/if}
+          {#if needsMatchActions}
+            <div class="match-box">
+              <p class="muted">This title is {selected.matchStatus}. Ignore hides it from catalog identity, or rematch against path/NFO / an IMDB id.</p>
+              <div class="toolbar">
+                <button class="ghost" onclick={() => rematchSelected(false)} disabled={matchBusy}>Rematch</button>
+                <button class="ghost" onclick={ignoreSelected} disabled={matchBusy}>Ignore</button>
+              </div>
+              <div class="enqueue">
+                <input bind:value={rematchImdb} placeholder="tt0123456" />
+                <button onclick={() => rematchSelected(true)} disabled={matchBusy || !rematchImdb.trim()}>
+                  {matchBusy ? 'Working…' : 'Set IMDB'}
+                </button>
+              </div>
+            </div>
+          {/if}
           {#if deleteError}<p class="error">{deleteError}</p>{/if}
           <div class="toolbar">
             <button class="ghost danger" onclick={() => removeSelected()} disabled={deleting}>
@@ -607,6 +971,145 @@
             {/if}
           </div>
         </section>
+      {/if}
+    {/if}
+
+    {#if page === 'taste'}
+      <header>
+        <div>
+          <h2>Match</h2>
+          <p class="muted">The household taste profile the TV uses to score every card. Learned from your confirmed library and paused shows.</p>
+        </div>
+        <div class="toolbar">
+          <button onclick={rebuildTaste} disabled={tasteBusy}>{tasteBusy ? 'Working…' : 'Rebuild'}</button>
+          <button class="ghost" onclick={refreshTaste}>Refresh</button>
+        </div>
+      </header>
+      {#if tasteError}<p class="error">{tasteError}</p>{/if}
+      {#if taste}
+        {#if taste.coldStart}
+          <div class="banner">
+            <strong>Cold start</strong>
+            <span>Only {taste.titles} title{taste.titles === 1 ? '' : 's'} learned — Match falls back to the public rating until {taste.config?.minTitles} are confirmed{taste.config?.enabled ? '' : ' (personalization is off)'}.</span>
+          </div>
+        {/if}
+        <div class="cards">
+          <article class="card">
+            <h3>Titles learned</h3>
+            <p class="stat" class:accent={!taste.coldStart}>{taste.titles}</p>
+            <p class="muted">need {taste.config?.minTitles} to personalize</p>
+          </article>
+          <article class="card">
+            <h3>Sweet-spot year</h3>
+            <p class="stat">{taste.meanYear || '—'}</p>
+            <p class="muted">weighted mean of what you watch</p>
+          </article>
+          <article class="card">
+            <h3>Personalization</h3>
+            <p class="stat" class:accent={taste.config?.enabled} class:bad={!taste.config?.enabled}>{taste.config?.enabled ? 'on' : 'off'}</p>
+            <p class="muted">{Math.round((taste.config?.personalWeight ?? 0) * 100)}% taste · {Math.round((1 - (taste.config?.personalWeight ?? 0)) * 100)}% crowd</p>
+          </article>
+          <article class="card">
+            <h3>Last built</h3>
+            <p class="stat">{taste.updatedAt ? fmtAgo(taste.updatedAt) : '—'}</p>
+            <p class="muted">rebuilds automatically as the library changes</p>
+          </article>
+        </div>
+
+        <h3>Top genres</h3>
+        {#if taste.topGenres?.length}
+          <div class="bars">
+            {#each taste.topGenres as tag}
+              <div class="bar-row">
+                <span class="bar-label">{tag.name}</span>
+                <div class="bar wide"><div class="bar-fill accent" style={`width: ${Math.round(tag.share * 100)}%`}></div></div>
+                <span class="bar-val">{Math.round(tag.share * 100)}%</span>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="muted">No genres learned yet.</p>
+        {/if}
+
+        {#if taste.topCountries?.length}
+          <h3>Top countries</h3>
+          <div class="chips">
+            {#each taste.topCountries as tag}
+              <span class="chip on">{tag.name} · {Math.round(tag.share * 100)}%</span>
+            {/each}
+          </div>
+        {/if}
+
+        <h3>Tuning</h3>
+        <div class="tuning">
+          <label class="check">
+            <input type="checkbox" checked={taste.config?.enabled} onchange={(e) => saveTaste({ enabled: e.target.checked })} disabled={tasteBusy} />
+            Personalize Match (off = everyone sees the public rating)
+          </label>
+          <label class="slider">
+            <span>Blend: <strong>{Math.round((taste.config?.personalWeight ?? 0) * 100)}%</strong> your taste vs {Math.round((1 - (taste.config?.personalWeight ?? 0)) * 100)}% crowd</span>
+            <input
+              type="range" min="0" max="100" step="5"
+              value={Math.round((taste.config?.personalWeight ?? 0) * 100)}
+              oninput={(e) => taste = { ...taste, config: { ...taste.config, personalWeight: Number(e.target.value) / 100 } }}
+              onchange={(e) => saveTaste({ personalWeight: Number(e.target.value) / 100 })}
+              disabled={tasteBusy || !taste.config?.enabled}
+            />
+          </label>
+          <label class="numfield">
+            <span>Titles before personalizing</span>
+            <input
+              type="number" min="1" value={taste.config?.minTitles}
+              onchange={(e) => saveTaste({ minTitles: Number(e.target.value) })}
+              disabled={tasteBusy}
+            />
+          </label>
+        </div>
+        {#if taste.fingerprint}<p class="muted mono">fingerprint {taste.fingerprint}</p>{/if}
+      {:else if !tasteError}
+        <p class="muted">Loading taste profile…</p>
+      {/if}
+    {/if}
+
+    {#if page === 'subtitles'}
+      <header>
+        <div>
+          <h2>Subtitles</h2>
+          <p class="muted">OpenSubtitles.com credentials and preferred languages. Downloads require a free account login as well as an API key.</p>
+        </div>
+        <button class="ghost" onclick={refreshSubtitles}>Refresh</button>
+      </header>
+      {#if subError}<p class="error">{subError}</p>{/if}
+      {#if subSettings}
+        <div class="settings-grid">
+          <label class="check">
+            <input type="checkbox" bind:checked={subSettings.enabled} /> Enable OpenSubtitles search
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={subSettings.autoLoad} /> Auto-load preferred language on play
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={subSettings.preferEmbedded} /> Prefer embedded / sidecar over online
+          </label>
+          <label>Languages (comma-separated ISO codes)
+            <input bind:value={subLangs} placeholder="en, et" />
+          </label>
+          <label>User-Agent (must match your OpenSubtitles consumer app name)
+            <input bind:value={subSettings.userAgent} placeholder="Coog v0.1.1" />
+          </label>
+          <label>Username
+            <input bind:value={subSettings.username} placeholder="opensubtitles.com username" autocomplete="username" />
+          </label>
+          <label>Password
+            <input bind:value={subPassword} type="password" placeholder={subSettings.hasPassword ? '•••• saved — paste to replace' : 'opensubtitles.com password'} autocomplete="current-password" />
+          </label>
+          <label>API key
+            <input bind:value={subApiKey} type="password" placeholder={subSettings.hasApiKey ? `${subSettings.apiKeyMasked} — paste to replace` : 'from opensubtitles.com API consumers'} />
+          </label>
+        </div>
+        <p class="muted">Register an API consumer at opensubtitles.com, then set the User-Agent to the exact Application Name (e.g. Coog v0.1.1).</p>
+      {:else if !subError}
+        <p class="muted">Loading…</p>
       {/if}
     {/if}
 
@@ -655,7 +1158,6 @@
         </p>
         <div class="enqueue">
           <input bind:value={rdToken} placeholder="Real-Debrid API token" type="password" />
-          <button onclick={saveStreaming} disabled={streamBusy}>{streamBusy ? 'Saving…' : 'Save'}</button>
         </div>
         {#if streamError}<p class="error">{streamError}</p>{/if}
       {:else if streamError}
@@ -663,4 +1165,21 @@
       {/if}
     {/if}
   </main>
+</div>
+
+{#if (page === 'streaming' && streamDirty) || (page === 'subtitles' && subDirty)}
+  <div class="save-bar">
+    <span>Unsaved changes</span>
+    {#if page === 'streaming'}
+      <button onclick={saveStreaming} disabled={streamBusy}>{streamBusy ? 'Saving…' : 'Save streaming'}</button>
+    {:else}
+      <button onclick={saveSubtitles} disabled={subBusy}>{subBusy ? 'Saving…' : 'Save subtitles'}</button>
+    {/if}
+  </div>
+{/if}
+
+<div class="toasts" aria-live="polite">
+  {#each toasts as t (t.id)}
+    <div class="toast" class:error={t.kind === 'error'}>{t.message}</div>
+  {/each}
 </div>

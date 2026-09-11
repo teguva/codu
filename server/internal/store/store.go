@@ -126,6 +126,38 @@ CREATE TABLE IF NOT EXISTS worker_heartbeat (
   updated_at INTEGER NOT NULL,
   pid INTEGER NOT NULL DEFAULT 0
 );`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS continue_watching (
+  entry_key TEXT PRIMARY KEY,
+  imdb_id TEXT NOT NULL DEFAULT '',
+  tmdb_id INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  year INTEGER NOT NULL DEFAULT 0,
+  season INTEGER NOT NULL DEFAULT 0,
+  episode INTEGER NOT NULL DEFAULT 0,
+  position_ms INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  media_id TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_continue_updated ON continue_watching(updated_at DESC);
+`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS taste_profile (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL DEFAULT '',
+  titles INTEGER NOT NULL DEFAULT 0,
+  payload TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL
+);
+`)
 	return err
 }
 

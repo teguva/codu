@@ -38,8 +38,8 @@ func Negotiate(item store.MediaItem, caps *Capabilities) (Result, error) {
 	}
 	if awkwardAudio(item.CodecAudio) && !containsCodec(caps.AudioCodecs, item.CodecAudio) {
 		return Result{
-			Method: MethodDirect,
-			Reason: "awkward audio " + item.CodecAudio + "; trying direct play (remux not implemented)",
+			Method: MethodRemux,
+			Reason: "awkward audio " + item.CodecAudio + "; remux to AAC for client",
 		}, nil
 	}
 	return Result{Method: MethodDirect, Reason: "client can direct play"}, nil

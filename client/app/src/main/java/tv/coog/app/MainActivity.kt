@@ -49,6 +49,25 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val mapped = mapToDpad(event) ?: event
+        // #region agent log
+        if (
+            mapped.keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+            event.keyCode == KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP
+        ) {
+            tv.coog.app.ui.coogDebug(
+                "E",
+                "MainActivity.kt:dispatchKeyEvent",
+                "up key",
+                mapOf(
+                    "raw" to event.keyCode,
+                    "mapped" to mapped.keyCode,
+                    "action" to mapped.action,
+                    "focus" to (currentFocus?.javaClass?.simpleName ?: "none"),
+                    "touchMode" to (currentFocus?.isInTouchMode == true),
+                ),
+            )
+        }
+        // #endregion
         val focus = currentFocus
         if (focus is EditText) {
             return super.dispatchKeyEvent(mapped)

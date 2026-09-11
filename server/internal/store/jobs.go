@@ -71,6 +71,18 @@ func (s *Store) ListJobs() ([]Job, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) DeleteJob(id string) error {
+	res, err := s.db.Exec(`DELETE FROM jobs WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) FindActiveJobByIMDB(imdb string) (Job, error) {
 	imdb = strings.ToLower(strings.TrimSpace(imdb))
 	if imdb == "" {

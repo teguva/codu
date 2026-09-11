@@ -26,7 +26,7 @@ func main() {
 	flag.StringVar(&cfg.FFmpeg, "ffmpeg", cfg.FFmpeg, "ffmpeg binary (COOG_FFMPEG)")
 	flag.StringVar(&cfg.FFprobe, "ffprobe", cfg.FFprobe, "ffprobe binary (COOG_FFPROBE)")
 	flag.StringVar(&cfg.AuthToken, "token", cfg.AuthToken, "Shared bearer token (COOG_AUTH_TOKEN)")
-	flag.StringVar(&cfg.AdminDir, "admin", cfg.AdminDir, "Optional directory of built admin static files (COOG_ADMIN_DIR)")
+	flag.StringVar(&cfg.AdminDir, "admin", cfg.AdminDir, "Admin SPA directory (COOG_ADMIN_DIR); default is embedded UI or nearby admin/dist")
 	flag.Parse()
 
 	if err := os.MkdirAll(cfg.DataPath, 0o755); err != nil {

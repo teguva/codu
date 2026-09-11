@@ -33,6 +33,7 @@ type Info struct {
 	TMDBID         int          `json:"tmdbId,omitempty"`
 	Cast           []CastMember `json:"cast,omitempty"`
 	Director       *CastMember  `json:"director,omitempty"`
+	EpisodeCount   int          `json:"episodeCount,omitempty"`
 }
 
 type Enricher struct {
@@ -80,7 +81,9 @@ func (e *Enricher) Ensure(ctx context.Context, item store.MediaItem) Info {
 	if info, ok := e.Peek(item.ID); ok && e.cacheStillValid(item, info) {
 		e.persistIdentity(item, info)
 		if IdentityConfirmed(item.Path, info) {
-			if e.tmdbEnabled() && info.Tagline == "" && !strings.Contains(info.Source, "tmdb") {
+			needTMDB := (info.Tagline == "" && !strings.Contains(info.Source, "tmdb")) ||
+				((item.Kind == "episode" || item.Kind == "series") && info.EpisodeCount == 0)
+			if e.tmdbEnabled() && needTMDB {
 				title := item.Title
 				if item.Kind == "episode" && item.ShowTitle != "" {
 					title = item.ShowTitle

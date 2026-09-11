@@ -35,6 +35,15 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 mkdir -p "$PREFIX/bin" "$UNIT_DIR" "$ENV_DIR"
+ADMIN_DIST="$ROOT/admin/dist"
+if command -v npm >/dev/null 2>&1; then
+  ( cd "$ROOT/admin" && npm ci && npm run build )
+fi
+if [[ -f "$ADMIN_DIST/index.html" ]]; then
+  mkdir -p "$PREFIX/share/coog/admin" "$ROOT/server/internal/adminui/fs"
+  cp -a "$ADMIN_DIST"/. "$PREFIX/share/coog/admin/"
+  cp -a "$ADMIN_DIST"/. "$ROOT/server/internal/adminui/fs/"
+fi
 ( cd "$ROOT/server" && go build -trimpath -ldflags="-s -w" -o "$PREFIX/bin/coog-api" ./cmd/coog-api )
 ( cd "$ROOT/server" && go build -trimpath -ldflags="-s -w" -o "$PREFIX/bin/coog-worker" ./cmd/coog-worker )
 
