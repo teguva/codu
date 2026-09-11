@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -113,21 +114,28 @@ fun CatalogRow(
     if (items.isEmpty()) return
     val hideCaptions = compact || featured
     val metrics = rememberPosterMetrics(compact = hideCaptions, featured = featured)
-    Shelf(label = label, metrics = metrics, modifier = modifier, insetStart = insetStart, compact = hideCaptions) {
-        itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
-            PosterCard(
-                item = item,
-                title = item.headline(),
-                subtitle = item.year.takeIf { it > 0 }?.toString().orEmpty(),
-                onClick = { onOpen(item) },
-                onFocused = onFocused?.let { cb -> { cb(item) } },
-                modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                mark = if (showBadge) item.cardMark(jobs, library) else null,
-                exitUp = exitUp,
-                compact = hideCaptions,
-                featured = featured,
-            )
-        }
+    PivotedShelf(
+        label = label,
+        metrics = metrics,
+        items = items,
+        keyOf = { it.id },
+        modifier = modifier,
+        insetStart = insetStart,
+        compact = hideCaptions,
+        firstFocus = firstFocus,
+    ) { _, item, itemFocus ->
+        PosterCard(
+            item = item,
+            title = item.headline(),
+            subtitle = item.year.takeIf { it > 0 }?.toString().orEmpty(),
+            onClick = { onOpen(item) },
+            onFocused = onFocused?.let { cb -> { cb(item) } },
+            modifier = itemFocus,
+            mark = if (showBadge) item.cardMark(jobs, library) else null,
+            exitUp = exitUp,
+            compact = hideCaptions,
+            featured = featured,
+        )
     }
 }
 
@@ -372,21 +380,28 @@ fun ShowCatalogRow(
     if (shows.isEmpty()) return
     val hideCaptions = compact || featured
     val metrics = rememberPosterMetrics(compact = hideCaptions, featured = featured)
-    Shelf(label = label, metrics = metrics, modifier = modifier, compact = hideCaptions, insetStart = insetStart) {
-        itemsIndexed(shows, key = { _, show -> show.name }) { index, show ->
-            PosterCard(
-                item = show.cover,
-                title = show.name,
-                subtitle = show.subtitle,
-                onClick = { onOpen(show) },
-                onFocused = onFocused?.let { cb -> { cb(show.cover) } },
-                modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                mark = if (featured) null else show.cardMark(jobs),
-                exitUp = exitUp,
-                compact = hideCaptions,
-                featured = featured,
-            )
-        }
+    PivotedShelf(
+        label = label,
+        metrics = metrics,
+        items = shows,
+        keyOf = { it.name },
+        modifier = modifier,
+        compact = hideCaptions,
+        insetStart = insetStart,
+        firstFocus = firstFocus,
+    ) { _, show, itemFocus ->
+        PosterCard(
+            item = show.cover,
+            title = show.name,
+            subtitle = show.subtitle,
+            onClick = { onOpen(show) },
+            onFocused = onFocused?.let { cb -> { cb(show.cover) } },
+            modifier = itemFocus,
+            mark = if (featured) null else show.cardMark(jobs),
+            exitUp = exitUp,
+            compact = hideCaptions,
+            featured = featured,
+        )
     }
 }
 
@@ -406,32 +421,58 @@ fun FolderCatalogRow(
     if (folders.isEmpty()) return
     val hideCaptions = compact || featured
     val metrics = rememberPosterMetrics(compact = hideCaptions, featured = featured)
-    Shelf(label = label, metrics = metrics, modifier = modifier, compact = hideCaptions, insetStart = insetStart) {
-        itemsIndexed(folders, key = { _, folder -> folder.name }) { index, folder ->
-            PosterCard(
-                item = folder.cover,
-                title = folder.name,
-                subtitle = folder.subtitle,
-                onClick = { onOpen(folder) },
-                onFocused = onFocused?.let { cb -> { cb(folder.cover) } },
-                modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                exitUp = exitUp,
-                compact = hideCaptions,
-                featured = featured,
-            )
-        }
+    PivotedShelf(
+        label = label,
+        metrics = metrics,
+        items = folders,
+        keyOf = { it.name },
+        modifier = modifier,
+        compact = hideCaptions,
+        insetStart = insetStart,
+        firstFocus = firstFocus,
+    ) { _, folder, itemFocus ->
+        PosterCard(
+            item = folder.cover,
+            title = folder.name,
+            subtitle = folder.subtitle,
+            onClick = { onOpen(folder) },
+            onFocused = onFocused?.let { cb -> { cb(folder.cover) } },
+            modifier = itemFocus,
+            exitUp = exitUp,
+            compact = hideCaptions,
+            featured = featured,
+        )
     }
 }
 
 @Composable
-private fun Shelf(
+private fun <T> PivotedShelf(
     label: String,
     metrics: PosterMetrics,
+    items: List<T>,
+    keyOf: (T) -> Any,
     modifier: Modifier = Modifier,
     insetStart: Dp = RailWidth,
     compact: Boolean = false,
-    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
+    firstFocus: FocusRequester? = null,
+    itemContent: @Composable (index: Int, item: T, focusModifier: Modifier) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val itemCount = items.size
+    var focusedIndex by remember(items.map(keyOf)) { mutableIntStateOf(0) }
+    val localRequesters = remember(itemCount) { List(itemCount) { FocusRequester() } }
+    fun requesterAt(index: Int): FocusRequester =
+        if (index == 0 && firstFocus != null) firstFocus else localRequesters[index]
+    fun moveFocus(to: Int): Boolean {
+        if (to !in 0 until itemCount) return false
+        focusedIndex = to
+        scope.launch {
+            runCatching { listState.scrollToItem(to) }
+            runCatching { requesterAt(to).requestFocus() }
+        }
+        return true
+    }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 0.dp else 2.dp)) {
         Text(
             label,
@@ -440,7 +481,17 @@ private fun Shelf(
         )
         PivotBringIntoView(pin = insetStart) {
             LazyRow(
-                modifier = Modifier.focusRestorer(),
+                state = listState,
+                modifier = Modifier
+                    .focusRestorer()
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when (event.key) {
+                            Key.DirectionRight -> moveFocus(focusedIndex + 1)
+                            Key.DirectionLeft -> moveFocus(focusedIndex - 1)
+                            else -> false
+                        }
+                    },
                 userScrollEnabled = false,
                 horizontalArrangement = Arrangement.spacedBy(metrics.gap),
                 contentPadding = PaddingValues(
@@ -449,8 +500,14 @@ private fun Shelf(
                     top = if (compact) 14.dp else 12.dp,
                     bottom = if (compact) 14.dp else 16.dp,
                 ),
-                content = content,
-            )
+            ) {
+                itemsIndexed(items, key = { _, item -> keyOf(item) }) { index, item ->
+                    val focusMod = Modifier
+                        .focusRequester(requesterAt(index))
+                        .onFocusChanged { if (it.isFocused) focusedIndex = index }
+                    itemContent(index, item, focusMod)
+                }
+            }
         }
     }
 }
@@ -566,17 +623,22 @@ fun JobCatalogRow(
     val metrics = rememberPosterMetrics()
     val cardWidth = metrics.width * 1.9f
     val cardHeight = metrics.height * 0.42f
-    Shelf(label = "Downloading", metrics = metrics, modifier = modifier) {
-        itemsIndexed(jobs, key = { _, job -> job.id }) { index, job ->
-            JobCard(
-                job = job,
-                width = cardWidth,
-                height = cardHeight,
-                onClick = { onOpen(job) },
-                modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                exitUp = index == 0,
-            )
-        }
+    PivotedShelf(
+        label = "Downloading",
+        metrics = metrics,
+        items = jobs,
+        keyOf = { it.id },
+        modifier = modifier,
+        firstFocus = firstFocus,
+    ) { index, job, itemFocus ->
+        JobCard(
+            job = job,
+            width = cardWidth,
+            height = cardHeight,
+            onClick = { onOpen(job) },
+            modifier = itemFocus,
+            exitUp = index == 0,
+        )
     }
 }
 

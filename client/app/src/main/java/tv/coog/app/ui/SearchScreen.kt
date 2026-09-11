@@ -86,7 +86,6 @@ fun SearchScreen(
             result = got
             error = got.error.takeIf { it.isNotBlank() }
         } catch (e: Exception) {
-            result = null
             error = e.message ?: "Search failed"
         } finally {
             loading = false
@@ -100,7 +99,7 @@ fun SearchScreen(
             .padding(start = catalogInset(), top = topBarHeight() + 6.dp, end = catalogInset(), bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        item {
+        item(key = "header") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Search", style = CoogType.screenTitle)
                 Text(
@@ -110,7 +109,7 @@ fun SearchScreen(
                 )
             }
         }
-        item {
+        item(key = "field") {
             TvTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -120,44 +119,51 @@ fun SearchScreen(
             )
         }
         if (query.trim().length < 2 && result == null) {
-            item {
+            item(key = "hint") {
                 Text("Start typing a title or actor name.", style = CoogType.heroPlot, color = CoogTextSecondary)
             }
         }
-        when {
-            loading -> item { Text("Searching…", style = CoogType.heroPlot) }
-            error != null && result == null -> item { Text(error ?: "", color = Color(0xFFFF8B8B)) }
-            result != null -> {
-                val movies = result?.movies.orEmpty()
-                val series = result?.series.orEmpty()
-                val people = result?.people.orEmpty()
-                if (error != null) {
-                    item { Text(error ?: "", color = Color(0xFFFF8B8B)) }
+        if (loading && result == null) {
+            item(key = "loading") { Text("Searching…", style = CoogType.heroPlot) }
+        }
+        if (error != null && result == null) {
+            item(key = "error") { Text(error ?: "", color = Color(0xFFFF8B8B)) }
+        }
+        result?.let { hit ->
+            val movies = hit.movies
+            val series = hit.series
+            val people = hit.people
+            if (error != null) {
+                item(key = "warn") { Text(error ?: "", color = Color(0xFFFF8B8B)) }
+            }
+            if (loading) {
+                item(key = "refreshing") {
+                    Text("Updating…", style = CoogType.cardYear, color = CoogTextMuted)
                 }
-                if (movies.isEmpty() && series.isEmpty() && people.isEmpty() && error == null) {
-                    item { Text("No matches.", style = CoogType.heroPlot) }
+            }
+            if (movies.isEmpty() && series.isEmpty() && people.isEmpty() && error == null && !loading) {
+                item(key = "empty") { Text("No matches.", style = CoogType.heroPlot) }
+            }
+            if (movies.isNotEmpty()) {
+                item(key = "movies") {
+                    CatalogRow(label = "Movies", items = movies, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
                 }
-                if (movies.isNotEmpty()) {
-                    item {
-                        CatalogRow(label = "Movies", items = movies, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
-                    }
+            }
+            if (series.isNotEmpty()) {
+                item(key = "series") {
+                    CatalogRow(label = "Series", items = series, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
                 }
-                if (series.isNotEmpty()) {
-                    item {
-                        CatalogRow(label = "Series", items = series, onOpen = onOpenTitle, jobs = jobs, library = library, insetStart = 0.dp)
-                    }
-                }
-                if (people.isNotEmpty()) {
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("People", style = CoogType.shelfTitle)
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                itemsIndexed(people, key = { index, person -> "${person.tmdbId}-$index" }) { _, person ->
-                                    PersonChip(
-                                        person = person,
-                                        onClick = { onOpenPerson(person) },
-                                    )
-                                }
+            }
+            if (people.isNotEmpty()) {
+                item(key = "people") {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("People", style = CoogType.shelfTitle)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            itemsIndexed(people, key = { index, person -> "${person.tmdbId}-$index" }) { _, person ->
+                                PersonChip(
+                                    person = person,
+                                    onClick = { onOpenPerson(person) },
+                                )
                             }
                         }
                     }
