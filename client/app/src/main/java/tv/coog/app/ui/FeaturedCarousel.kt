@@ -54,6 +54,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -294,7 +297,10 @@ private fun RowCard(
         modifier = modifier
             .width(width)
             .fillMaxHeight()
-            .onFocusChanged { focused = it.isFocused },
+            .onFocusChanged {
+                focused = it.isFocused
+                if (!it.isFocused) trailerPlaying = false
+            },
     ) {
         Box(
             modifier = Modifier
@@ -310,7 +316,9 @@ private fun RowCard(
                     alignment = Alignment.Center,
                     modifier = Modifier.fillMaxSize(),
                 )
-                if (playTrailer) {
+                // Only while this card holds focus — otherwise audio keeps looping under the rail /
+                // dialogs / other shelves after the row stays "expanded".
+                if (playTrailer && focused) {
                     FocusedTrailer(
                         item = item,
                         onPlaying = { trailerPlaying = it },
@@ -474,9 +482,24 @@ private fun TrailerPlayer(
     onReady: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var ready by remember(url) { mutableStateOf(false) }
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    var resumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     LaunchedEffect(ready) { onReady(ready) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> resumed = true
+                Lifecycle.Event.ON_PAUSE -> resumed = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     DisposableEffect(url, token) {
         val http = DefaultHttpDataSource.Factory()
         if (token.isNotBlank()) {
@@ -504,13 +527,20 @@ private fun TrailerPlayer(
         player = exo
         onDispose {
             onReady(false)
+            exo.playWhenReady = false
+            exo.stop()
             exo.release()
             player = null
             ready = false
         }
     }
+    LaunchedEffect(resumed, player) {
+        val exo = player ?: return@LaunchedEffect
+        exo.playWhenReady = resumed
+        if (!resumed) exo.pause()
+    }
     val exo = player
-    AnimatedVisibility(visible = ready && exo != null, enter = fadeIn(), exit = fadeOut()) {
+    AnimatedVisibility(visible = ready && resumed && exo != null, enter = fadeIn(), exit = fadeOut()) {
         if (exo != null) {
             Box(modifier.clipToBounds()) {
                 ContentFrame(
