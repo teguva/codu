@@ -65,6 +65,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
@@ -260,6 +263,35 @@ fun PlayerScreen(
                 player.pause()
                 onBack()
             }
+        }
+    }
+
+    // Pause when the TV Home button (or any other app) backgrounds us — ExoPlayer otherwise
+    // keeps decoding/audio under the launcher. Resume only if we were playing before.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
+        var resumeAfterPause = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    resumeAfterPause = player.playWhenReady
+                    player.playWhenReady = false
+                    playing = false
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (resumeAfterPause) {
+                        player.playWhenReady = true
+                        playing = true
+                    }
+                    resumeAfterPause = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            player.playWhenReady = false
         }
     }
 

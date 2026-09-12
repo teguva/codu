@@ -544,7 +544,11 @@ fun CoogApp() {
         continueWatching = runCatching { CoogApi(serverUrl, token).catalogContinue() }.getOrDefault(continueWatching)
     }
 
-    BackHandler(enabled = current !is Screen.Player) { pop() }
+    // At Browse + Home with an empty stack, leave Back unhandled so the activity finishes
+    // (otherwise pop() is a no-op and the remote Back key cannot exit the app).
+    val canNavigateBack = current !is Screen.Player &&
+        (stack.size > 1 || tab != BrowseTab.Home)
+    BackHandler(enabled = canNavigateBack) { pop() }
 
     CompositionLocalProvider(LocalCoogServer provides CoogServer(serverUrl, token)) {
         when (val screen = current) {
