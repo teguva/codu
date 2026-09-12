@@ -92,6 +92,7 @@ fun AppShell(
     tab: BrowseTab,
     onTab: (BrowseTab) -> Unit,
     showFolders: Boolean = false,
+    onRootBack: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     var railFocused by remember { mutableStateOf(false) }
@@ -146,7 +147,12 @@ fun AppShell(
     }
 
     BackHandler(enabled = railFocused) {
-        leaveRail()
+        // On Home the nav is the root — Back should leave the app, not just blur the rail.
+        if (tab == BrowseTab.Home) {
+            onRootBack()
+        } else {
+            leaveRail()
+        }
     }
 
     LaunchedEffect(tab, railOrder) {

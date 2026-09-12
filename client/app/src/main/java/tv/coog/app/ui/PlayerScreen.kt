@@ -266,35 +266,6 @@ fun PlayerScreen(
         }
     }
 
-    // Pause when the TV Home button (or any other app) backgrounds us — ExoPlayer otherwise
-    // keeps decoding/audio under the launcher. Resume only if we were playing before.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, player) {
-        var resumeAfterPause = false
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> {
-                    resumeAfterPause = player.playWhenReady
-                    player.playWhenReady = false
-                    playing = false
-                }
-                Lifecycle.Event.ON_RESUME -> {
-                    if (resumeAfterPause) {
-                        player.playWhenReady = true
-                        playing = true
-                    }
-                    resumeAfterPause = false
-                }
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            player.playWhenReady = false
-        }
-    }
-
     LaunchedEffect(item?.id, title) {
         playerViewModel.resetOpening()
         remoteTracks = emptyList()
@@ -573,12 +544,36 @@ fun PlayerScreen(
     }
 
     // Keep the TV awake for the whole player session (screensaver otherwise kicks in).
+    // Pause when the box Home / another app takes focus — ExoPlayer otherwise keeps audio going.
     val view = LocalView.current
-    DisposableEffect(Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
         val window = (view.context as? android.app.Activity)?.window
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        var resumePlayback = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    resumePlayback = player.playWhenReady || player.isPlaying
+                    player.playWhenReady = false
+                    player.pause()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (resumePlayback) {
+                        player.playWhenReady = true
+                        player.play()
+                        resumePlayback = false
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            player.playWhenReady = false
+            player.pause()
         }
     }
 

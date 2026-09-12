@@ -1,8 +1,5 @@
 package tv.coog.app.ui
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.widthIn
@@ -34,18 +32,15 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import kotlin.math.abs
 import kotlinx.coroutines.delay
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -54,6 +49,10 @@ import tv.coog.app.data.MediaItem
 import tv.coog.app.ui.theme.CoogBgDeep
 import tv.coog.app.ui.theme.CoogBgSoft
 import tv.coog.app.ui.theme.CoogType
+
+/** Matches FeaturedCarousel label + FocusPad so idle peeks share one stable card height. */
+private val HomeShelfTitleBlock = 17.dp
+private val HomeFocusPad = 8.dp
 
 @Composable
 fun HomeScreen(
@@ -198,15 +197,13 @@ private fun HomeRows(
     }
     var focusedRow by remember { mutableIntStateOf(0) }
     var menuItem by remember { mutableStateOf<MediaItem?>(null) }
-    val motion = tween<Dp>(220, easing = FastOutSlowInEasing)
-    // Stable top pad — animating overlay↔bar height reflows maxHeight every frame and made
-    // Continue↔next-shelf feel much heavier than Movies↔Series (which never changed top pad).
-    val topPad = topBarOverlayHeight()
+    // Snap top inset with the focused row — no tween (avoids layout work on every D-pad move).
+    val topInset = if (focusedRow == 0) topBarOverlayHeight() else topBarHeight()
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(CoogBgDeep)
-            .padding(top = topPad)
+            .padding(top = topInset)
             .clipToBounds()
             .onPreviewKeyEvent { event ->
                 if (event.key == Key.DirectionUp && event.type == KeyEventType.KeyDown) {
@@ -229,19 +226,19 @@ private fun HomeRows(
         val prevPeek = (viewport * 0.12f).coerceIn(48.dp, 72.dp)
         // How much of the next (taller idle) row sticks into the viewport — more than prevPeek.
         val nextPeek = (viewport * 0.20f).coerceIn(80.dp, 120.dp)
-        // Unfocused shelves keep their original idle height; only the visible peeks change.
-        val idleH = (viewport * 0.36f).coerceIn(160.dp, 240.dp)
         // Same focused height on every shelf. On row 0 there is no previous peek — that
         // leftover space shows as a larger next-row peek (fills the viewport, no black bar).
         val activeH = (viewport - prevPeek - gap - nextPeek - gap).coerceAtLeast(280.dp)
+        // Unfocused peeks are half the focused card; idle shelves size to that peek height.
+        val activeCardHeight = (activeH - HomeShelfTitleBlock - HomeFocusPad * 2).coerceAtLeast(200.dp)
+        val peekCardHeight = activeCardHeight * 0.5f
+        val idleH = (HomeShelfTitleBlock + HomeFocusPad * 2 + peekCardHeight).coerceAtLeast(120.dp)
         val heights = shelves.mapIndexed { i, _ ->
             if (i == focusedRow) activeH else idleH
         }
         val yBefore = heights.take(focusedRow).fold(0.dp) { acc, h -> acc + h + gap }
-        val targetOffset = if (focusedRow == 0) 0.dp else -(yBefore - prevPeek)
-        val offsetY by animateDpAsState(targetOffset, motion, label = "home-offset")
-        val density = LocalDensity.current
-        val offsetPx = with(density) { offsetY.toPx() }
+        // Snap shelf positions — one layout pass per focus change, no per-frame remeasure.
+        val offsetY = if (focusedRow == 0) 0.dp else -(yBefore - prevPeek)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -252,13 +249,11 @@ private fun HomeRows(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                    // Translate without relayout — same motion, cheaper than Modifier.offset.
-                    .graphicsLayer { translationY = offsetPx },
+                    .offset(y = offsetY),
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
             shelves.forEachIndexed { i, shelf ->
                 androidx.compose.runtime.key(shelf.id) {
-                    val h by animateDpAsState(heights[i], motion, label = "home-h-$i")
                     FeaturedCarousel(
                         items = shelf.items,
                         label = shelf.label,
@@ -266,7 +261,7 @@ private fun HomeRows(
                         jobs = jobs,
                         library = library,
                         expanded = i == focusedRow,
-                        warmArt = abs(i - focusedRow) <= 1,
+                        peekCardHeight = peekCardHeight,
                         onRowFocused = { focusedRow = i },
                         firstFocus = if (i == 0) firstFocus else pinFocus[i],
                         exitUp = i == 0,
@@ -284,7 +279,7 @@ private fun HomeRows(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .requiredHeight(h)
+                            .requiredHeight(heights[i])
                             .clipToBounds(),
                     )
                 }

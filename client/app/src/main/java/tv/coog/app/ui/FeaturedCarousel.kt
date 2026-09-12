@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,19 +37,14 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -117,6 +111,8 @@ fun FeaturedCarousel(
     jobs: List<tv.coog.app.data.JobItem> = emptyList(),
     library: List<MediaItem> = emptyList(),
     expanded: Boolean = true,
+    /** When set, non-focused cards keep this height even in an expanded (tall) row. */
+    peekCardHeight: Dp = Dp.Unspecified,
     onRowFocused: () -> Unit = {},
     firstFocus: FocusRequester? = null,
     exitUp: Boolean = false,
@@ -124,14 +120,9 @@ fun FeaturedCarousel(
     onCardMenu: ((MediaItem) -> Unit)? = null,
     upFocus: FocusRequester? = null,
     downFocus: FocusRequester? = null,
-    /** Prefetch featured backdrop when this shelf is focused or adjacent (keeps ↑/↓ warm). */
-    warmArt: Boolean = expanded,
 ) {
     if (items.isEmpty()) return
     val server = LocalCoogServer.current
-    val context = LocalContext.current
-    val config = LocalConfiguration.current
-    val density = LocalDensity.current.density
     var selected by remember(items.firstOrNull()?.id) { mutableIntStateOf(0) }
     val index = selected.coerceIn(0, items.lastIndex)
     val cardFocus = firstFocus ?: remember { FocusRequester() }
@@ -140,55 +131,27 @@ fun FeaturedCarousel(
     var extras by remember { mutableStateOf<Map<String, MediaItem>>(emptyMap()) }
     val featured = extras[items[index].id] ?: items[index]
 
-    // Warm Coil before the user lands on this shelf so expand doesn't hitch on decode.
-    LaunchedEffect(featured.id, warmArt, server.url, server.token, featured.posterUrl, featured.backdropUrl) {
-        if (!warmArt) return@LaunchedEffect
-        prefetchMediaArt(
-            context, server, featured, ArtKind.Backdrop,
-            config.screenWidthDp, config.screenHeightDp, density,
-        )
-        prefetchMediaArt(
-            context, server, featured, ArtKind.Poster,
-            config.screenWidthDp, config.screenHeightDp, density,
-        )
-        val neighbor = items.getOrNull(index + 1) ?: items.getOrNull(index - 1)
-        if (neighbor != null) {
-            val n = extras[neighbor.id] ?: neighbor
-            prefetchMediaArt(
-                context, server, n, ArtKind.Poster,
-                config.screenWidthDp, config.screenHeightDp, density,
-            )
-        }
-    }
-
-    // Library/continue rows often lack CDN art. Wait out the shelf height animation before
-    // mutating extras so catalog merges don't recompose mid-scroll.
-    LaunchedEffect(items.joinToString { it.id }, server.url, server.token, expanded) {
-        if (!expanded) return@LaunchedEffect
-        delay(260)
+    // Built once per items change — not on every animation-frame recomposition (avoids per-frame
+    // string allocation / GC churn while home shelves animate).
+    val idsKey = remember(items) { items.joinToString { it.id } }
+    LaunchedEffect(idsKey, server.url, server.token) {
         val api = CoogApi(server.url, server.token)
         val missing = items.filter { raw ->
             val cur = extras[raw.id] ?: raw
             !hasCatalogArt(cur)
         }
-        if (missing.isEmpty()) return@LaunchedEffect
-        val batch = LinkedHashMap<String, MediaItem>()
         missing.forEachIndexed { i, raw ->
             if (i > 0) delay(40L)
-            val remote = resolveCatalogArt(api, raw) ?: return@forEachIndexed
-            batch[raw.id] = mergeDetails(raw, remote)
-            if (batch.size >= 3) {
-                extras = extras + batch
-                batch.clear()
+            val remote = resolveCatalogArt(api, raw)
+            if (remote != null) {
+                extras = extras + (raw.id to mergeDetails(raw, remote))
             }
         }
-        if (batch.isNotEmpty()) extras = extras + batch
     }
 
-    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token, expanded) {
-        if (!expanded) return@LaunchedEffect
+    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token) {
         if (hasCatalogArt(featured)) return@LaunchedEffect
-        delay(260)
+        delay(120)
         val api = CoogApi(server.url, server.token)
         val remote = resolveCatalogArt(api, featured)
         if (remote != null) {
@@ -212,94 +175,120 @@ fun FeaturedCarousel(
             val gap = 12.dp
             val pin = insetStart
             val rowHeight = maxHeight
-            val cardHeight = (rowHeight - FocusPad * 2).coerceAtLeast(1.dp)
-            val featuredWidth = cardHeight * 2f
-            val peekWidth = cardHeight * 2f / 3f
+            val featuredHeight = (rowHeight - FocusPad * 2).coerceAtLeast(1.dp)
+            // Focused row: peeks are exactly half the hero. Idle rows use the shared peek size.
+            val peekHeight = when {
+                expanded -> featuredHeight * 0.5f
+                peekCardHeight != Dp.Unspecified -> peekCardHeight
+                else -> featuredHeight
+            }
+            val featuredWidth = featuredHeight * 2f
+            val peekWidth = peekHeight * 2f / 3f
             val focusedWidth = if (expanded) featuredWidth else peekWidth
             val endPad = (maxWidth - pin - focusedWidth).coerceAtLeast(pin)
-            PivotBringIntoView(pin = pin) {
-                LazyRow(
-                    state = listState,
-                    userScrollEnabled = false,
-                    horizontalArrangement = Arrangement.spacedBy(gap),
-                    contentPadding = PaddingValues(
-                        start = pin,
-                        end = endPad,
-                        top = FocusPad,
-                        bottom = FocusPad,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(rowHeight),
-                ) {
-                itemsIndexed(items, key = { _, item -> item.id }) { i, raw ->
-                    val item = extras[raw.id] ?: raw
-                    val featuredCard = expanded && i == index
-                    RowCard(
-                        item = item,
-                        featured = featuredCard,
-                        width = if (featuredCard) featuredWidth else peekWidth,
-                        playTrailer = featuredCard,
-                        mark = item.cardMark(jobs, library),
-                        onOpen = { onOpen(item) },
-                        onLongClick = onCardMenu?.let { menu -> { menu(item) } },
+            val metaGap = 8.dp
+            val metaHeight = (featuredHeight - peekHeight - metaGap).coerceAtLeast(0.dp)
+            val metaWidth = (peekWidth * 3f + gap * 2f)
+                .coerceAtMost((maxWidth - pin - featuredWidth - gap - pin).coerceAtLeast(0.dp))
+            Box(modifier = Modifier.fillMaxSize()) {
+                PivotBringIntoView(pin = pin) {
+                    LazyRow(
+                        state = listState,
+                        userScrollEnabled = false,
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(gap),
+                        contentPadding = PaddingValues(
+                            start = pin,
+                            end = endPad,
+                            top = FocusPad,
+                            bottom = FocusPad,
+                        ),
                         modifier = Modifier
-                            .then(if (i == index) Modifier.focusRequester(cardFocus) else Modifier)
-                            .then(
-                                if (upFocus != null || downFocus != null) {
-                                    Modifier.focusProperties {
-                                        upFocus?.let { up = it }
-                                        downFocus?.let { down = it }
-                                    }
-                                } else {
-                                    Modifier
-                                },
-                            )
-                            .onFocusChanged {
-                                if (it.isFocused) {
-                                    onRowFocused()
-                                    selected = i
-                                }
-                            }
-                            .onPreviewKeyEvent { event ->
-                                val toMenu = (exitUp && event.key == Key.DirectionUp) ||
-                                    (exitUp && i == 0 && event.key == Key.DirectionLeft)
-                                // #region agent log
-                                if (event.key == Key.DirectionUp || event.key == Key.DirectionLeft) {
-                                    coogDebug(
-                                        if (exitUp) "A" else "D",
-                                        "FeaturedCarousel.kt:preview",
-                                        "card dpad",
-                                        mapOf(
-                                            "key" to event.key.toString(),
-                                            "type" to event.type.toString(),
-                                            "exitUp" to exitUp,
-                                            "i" to i,
-                                            "toMenu" to toMenu,
-                                            "label" to label,
-                                            "expanded" to expanded,
-                                        ),
+                            .fillMaxWidth()
+                            .height(rowHeight),
+                    ) {
+                        itemsIndexed(items, key = { _, item -> item.id }) { i, raw ->
+                            val item = extras[raw.id] ?: raw
+                            val featuredCard = expanded && i == index
+                            val mark = remember(item, jobs, library) { item.cardMark(jobs, library) }
+                            RowCard(
+                                item = item,
+                                featured = featuredCard,
+                                width = if (featuredCard) featuredWidth else peekWidth,
+                                height = if (featuredCard) featuredHeight else peekHeight,
+                                playTrailer = featuredCard,
+                                mark = mark,
+                                onOpen = { onOpen(item) },
+                                onLongClick = onCardMenu?.let { menu -> { menu(item) } },
+                                modifier = Modifier
+                                    .then(if (i == index) Modifier.focusRequester(cardFocus) else Modifier)
+                                    .then(
+                                        if (upFocus != null || downFocus != null) {
+                                            Modifier.focusProperties {
+                                                upFocus?.let { up = it }
+                                                downFocus?.let { down = it }
+                                            }
+                                        } else {
+                                            Modifier
+                                        },
                                     )
-                                }
-                                // #endregion
-                                if (toMenu) {
-                                    if (event.type == KeyEventType.KeyDown) enterRail()
-                                    return@onPreviewKeyEvent event.type == KeyEventType.KeyDown ||
-                                        event.type == KeyEventType.KeyUp
-                                }
-                                val target = when (event.key) {
-                                    Key.DirectionDown -> downFocus
-                                    Key.DirectionUp -> upFocus
-                                    else -> null
-                                }
-                                if (target == null) return@onPreviewKeyEvent false
-                                if (event.type == KeyEventType.KeyDown) {
-                                    runCatching { target.requestFocus() }
-                                }
-                                event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
-                            },
-                    )
+                                    .onFocusChanged {
+                                        if (it.isFocused) {
+                                            onRowFocused()
+                                            selected = i
+                                        }
+                                    }
+                                    .onPreviewKeyEvent { event ->
+                                        val toMenu = (exitUp && event.key == Key.DirectionUp) ||
+                                            (exitUp && i == 0 && event.key == Key.DirectionLeft)
+                                        // #region agent log
+                                        if (event.key == Key.DirectionUp || event.key == Key.DirectionLeft) {
+                                            coogDebug(
+                                                if (exitUp) "A" else "D",
+                                                "FeaturedCarousel.kt:preview",
+                                                "card dpad",
+                                                mapOf(
+                                                    "key" to event.key.toString(),
+                                                    "type" to event.type.toString(),
+                                                    "exitUp" to exitUp,
+                                                    "i" to i,
+                                                    "toMenu" to toMenu,
+                                                    "label" to label,
+                                                    "expanded" to expanded,
+                                                ),
+                                            )
+                                        }
+                                        // #endregion
+                                        if (toMenu) {
+                                            if (event.type == KeyEventType.KeyDown) enterRail()
+                                            return@onPreviewKeyEvent event.type == KeyEventType.KeyDown ||
+                                                event.type == KeyEventType.KeyUp
+                                        }
+                                        val target = when (event.key) {
+                                            Key.DirectionDown -> downFocus
+                                            Key.DirectionUp -> upFocus
+                                            else -> null
+                                        }
+                                        if (target == null) return@onPreviewKeyEvent false
+                                        if (event.type == KeyEventType.KeyDown) {
+                                            runCatching { target.requestFocus() }
+                                        }
+                                        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                                    },
+                            )
+                        }
+                    }
                 }
+                if (expanded && metaHeight > 0.dp && metaWidth > 0.dp) {
+                    val mark = remember(featured, jobs, library) { featured.cardMark(jobs, library) }
+                    FocusedMetaPanel(
+                        item = featured,
+                        mark = mark,
+                        modifier = Modifier
+                            .padding(start = pin + featuredWidth + gap, top = FocusPad)
+                            .width(metaWidth)
+                            .height(metaHeight),
+                    )
                 }
             }
         }
@@ -311,6 +300,7 @@ private fun RowCard(
     item: MediaItem,
     featured: Boolean,
     width: Dp,
+    height: Dp,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
     playTrailer: Boolean = false,
@@ -318,11 +308,6 @@ private fun RowCard(
     onLongClick: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    var trailerPlaying by remember(item.id) { mutableStateOf(false) }
-    var backdropReady by remember(item.id) { mutableStateOf(false) }
-    val genres = item.heroGenres().take(2)
-    val meta = item.cardMetaLine()
-    val resumeAt = item.seasonEpisode()
     Surface(
         onClick = onOpen,
         onLongClick = onLongClick,
@@ -335,11 +320,8 @@ private fun RowCard(
         scale = ClickableSurfaceDefaults.scale(focusedScale = if (featured) 1.02f else 1.08f),
         modifier = modifier
             .width(width)
-            .fillMaxHeight()
-            .onFocusChanged {
-                focused = it.isFocused
-                if (!it.isFocused) trailerPlaying = false
-            },
+            .height(height)
+            .onFocusChanged { focused = it.isFocused },
     ) {
         Box(
             modifier = Modifier
@@ -348,25 +330,11 @@ private fun RowCard(
                 .then(if (focused) Modifier.border(3.dp, Color.White, CardShape) else Modifier),
         ) {
             if (featured) {
-                // Poster is already in Coil from the peek card — show it under the backdrop so
-                // expand never waits on a cold full-bleed decode.
-                if (!backdropReady) {
-                    PosterArt(
-                        item = item,
-                        kind = ArtKind.Poster,
-                        contentScale = ContentScale.Crop,
-                        alignment = Alignment.Center,
-                        crossfade = false,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
                 PosterArt(
                     item = item,
                     kind = ArtKind.Backdrop,
                     contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
-                    crossfade = false,
-                    onSuccess = { backdropReady = true },
                     modifier = Modifier.fillMaxSize(),
                 )
                 // Only while this card holds focus — otherwise audio keeps looping under the rail /
@@ -374,129 +342,96 @@ private fun RowCard(
                 if (playTrailer && focused) {
                     FocusedTrailer(
                         item = item,
-                        onPlaying = { trailerPlaying = it },
                         modifier = Modifier.fillMaxSize(),
                     )
-                }
-                Column(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(0.72f)
-                        .background(
-                            Brush.horizontalGradient(
-                                0.00f to Color.Black.copy(alpha = if (trailerPlaying) 0.28f else 0.50f),
-                                0.55f to Color.Black.copy(alpha = if (trailerPlaying) 0.12f else 0.22f),
-                                1.00f to Color.Transparent,
-                            ),
-                        )
-                        .padding(start = 20.dp, end = 18.dp, top = 16.dp, bottom = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        item.headline(),
-                        style = CoogType.heroTitle.copy(
-                            fontSize = 24.sp,
-                            lineHeight = 28.sp,
-                            shadow = Shadow(Color.Black.copy(alpha = 0.9f), Offset(0f, 2f), 10f),
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (resumeAt.isNotBlank()) {
-                        Text(
-                            resumeAt,
-                            color = Color.White.copy(alpha = 0.92f),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                        )
-                    }
-                    AnimatedVisibility(
-                        visible = !trailerPlaying,
-                        enter = fadeIn(tween(280)),
-                        exit = fadeOut(tween(420)),
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                mark?.let { StatusMark(mark = it, size = MarkSize.Comfort) }
-                                item.matchPercent()?.let { MatchMark(percent = it, size = MarkSize.Comfort) }
-                            }
-                            if (meta.isNotBlank()) {
-                                Text(
-                                    meta,
-                                    color = Color.White.copy(alpha = 0.78f),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (genres.isNotEmpty()) {
-                                Text(
-                                    genres.joinToString("  •  "),
-                                    color = Color.White.copy(alpha = 0.70f),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
                 }
             } else {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    PosterArt(
-                        item = item,
-                        kind = ArtKind.Poster,
-                        mark = mark,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .fillMaxHeight(0.38f)
-                            .background(
-                                Brush.verticalGradient(
-                                    0.00f to Color.Transparent,
-                                    0.45f to Color.Black.copy(alpha = 0.18f),
-                                    1.00f to Color.Black.copy(alpha = 0.50f),
-                                ),
-                            ),
-                    )
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            item.headline(),
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            lineHeight = 15.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = if (resumeAt.isNotBlank()) 1 else 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (resumeAt.isNotBlank()) {
-                            Text(
-                                resumeAt,
-                                color = Color.White.copy(alpha = 0.86f),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
+                PosterArt(
+                    item = item,
+                    kind = ArtKind.Poster,
+                    mark = mark,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
             WatchProgressBar(
                 item = item,
                 modifier = Modifier.align(Alignment.BottomStart),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FocusedMetaPanel(
+    item: MediaItem,
+    mark: CardMark?,
+    modifier: Modifier = Modifier,
+) {
+    val genres = remember(item) { item.heroGenres() }
+    val meta = remember(item) { item.heroMetaLine().ifBlank { item.cardMetaLine() } }
+    val resumeAt = remember(item) { item.seasonEpisode() }
+    val plot = remember(item) {
+        item.plot.trim().ifBlank { item.tagline.trim() }
+    }
+    Column(
+        modifier = modifier
+            .clip(CardShape)
+            .background(Color.White.copy(alpha = 0.08f))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            item.headline(),
+            style = CoogType.heroTitle.copy(
+                fontSize = 22.sp,
+                lineHeight = 26.sp,
+            ),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (resumeAt.isNotBlank()) {
+            Text(
+                resumeAt,
+                color = Color.White.copy(alpha = 0.92f),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            mark?.let { StatusMark(mark = it, size = MarkSize.Comfort) }
+            item.matchPercent()?.let { MatchMark(percent = it, size = MarkSize.Comfort) }
+            if (meta.isNotBlank()) {
+                Text(
+                    meta,
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (genres.isNotEmpty()) {
+            Text(
+                genres.joinToString("  •  "),
+                color = Color.White.copy(alpha = 0.70f),
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (plot.isNotBlank()) {
+            Text(
+                plot,
+                color = Color.White.copy(alpha = 0.82f),
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
         }
     }

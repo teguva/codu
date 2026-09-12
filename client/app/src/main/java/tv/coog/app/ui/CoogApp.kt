@@ -1,5 +1,6 @@
 package tv.coog.app.ui
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -80,6 +81,10 @@ fun CoogApp() {
         stack = if (stack.isEmpty()) listOf(screen) else stack.dropLast(1) + screen
     }
 
+    fun exitApp() {
+        (context as? Activity)?.finish()
+    }
+
     fun pop() {
         playError = null
         if (stack.size > 1) {
@@ -88,7 +93,10 @@ fun CoogApp() {
         }
         if (tab != BrowseTab.Home) {
             tab = BrowseTab.Home
+            return
         }
+        // At browse Home with nothing left to pop — leave the app (TV Back).
+        exitApp()
     }
 
     LaunchedEffect(Unit) {
@@ -544,11 +552,7 @@ fun CoogApp() {
         continueWatching = runCatching { CoogApi(serverUrl, token).catalogContinue() }.getOrDefault(continueWatching)
     }
 
-    // At Browse + Home with an empty stack, leave Back unhandled so the activity finishes
-    // (otherwise pop() is a no-op and the remote Back key cannot exit the app).
-    val canNavigateBack = current !is Screen.Player &&
-        (stack.size > 1 || tab != BrowseTab.Home)
-    BackHandler(enabled = canNavigateBack) { pop() }
+    BackHandler(enabled = current !is Screen.Player) { pop() }
 
     CompositionLocalProvider(LocalCoogServer provides CoogServer(serverUrl, token)) {
         when (val screen = current) {
@@ -556,6 +560,7 @@ fun CoogApp() {
                 tab = tab,
                 onTab = { tab = it },
                 showFolders = extraFolders.isNotEmpty(),
+                onRootBack = { exitApp() },
             ) {
                 when (tab) {
                     BrowseTab.Settings -> SettingsScreen(
