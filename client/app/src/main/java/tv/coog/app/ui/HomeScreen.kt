@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.widthIn
@@ -35,15 +34,18 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -197,16 +199,14 @@ private fun HomeRows(
     var focusedRow by remember { mutableIntStateOf(0) }
     var menuItem by remember { mutableStateOf<MediaItem?>(null) }
     val motion = tween<Dp>(220, easing = FastOutSlowInEasing)
-    val topInset by animateDpAsState(
-        if (focusedRow == 0) topBarOverlayHeight() else topBarHeight(),
-        motion,
-        label = "home-top",
-    )
+    // Stable top pad — animating overlay↔bar height reflows maxHeight every frame and made
+    // Continue↔next-shelf feel much heavier than Movies↔Series (which never changed top pad).
+    val topPad = topBarOverlayHeight()
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(CoogBgDeep)
-            .padding(top = topInset)
+            .padding(top = topPad)
             .clipToBounds()
             .onPreviewKeyEvent { event ->
                 if (event.key == Key.DirectionUp && event.type == KeyEventType.KeyDown) {
@@ -240,6 +240,8 @@ private fun HomeRows(
         val yBefore = heights.take(focusedRow).fold(0.dp) { acc, h -> acc + h + gap }
         val targetOffset = if (focusedRow == 0) 0.dp else -(yBefore - prevPeek)
         val offsetY by animateDpAsState(targetOffset, motion, label = "home-offset")
+        val density = LocalDensity.current
+        val offsetPx = with(density) { offsetY.toPx() }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -250,7 +252,8 @@ private fun HomeRows(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                    .offset(y = offsetY),
+                    // Translate without relayout — same motion, cheaper than Modifier.offset.
+                    .graphicsLayer { translationY = offsetPx },
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
             shelves.forEachIndexed { i, shelf ->
@@ -263,6 +266,7 @@ private fun HomeRows(
                         jobs = jobs,
                         library = library,
                         expanded = i == focusedRow,
+                        warmArt = abs(i - focusedRow) <= 1,
                         onRowFocused = { focusedRow = i },
                         firstFocus = if (i == 0) firstFocus else pinFocus[i],
                         exitUp = i == 0,

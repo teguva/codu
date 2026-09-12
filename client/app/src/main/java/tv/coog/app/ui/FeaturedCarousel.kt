@@ -48,7 +48,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -122,9 +124,14 @@ fun FeaturedCarousel(
     onCardMenu: ((MediaItem) -> Unit)? = null,
     upFocus: FocusRequester? = null,
     downFocus: FocusRequester? = null,
+    /** Prefetch featured backdrop when this shelf is focused or adjacent (keeps ↑/↓ warm). */
+    warmArt: Boolean = expanded,
 ) {
     if (items.isEmpty()) return
     val server = LocalCoogServer.current
+    val context = LocalContext.current
+    val config = LocalConfiguration.current
+    val density = LocalDensity.current.density
     var selected by remember(items.firstOrNull()?.id) { mutableIntStateOf(0) }
     val index = selected.coerceIn(0, items.lastIndex)
     val cardFocus = firstFocus ?: remember { FocusRequester() }
@@ -133,24 +140,55 @@ fun FeaturedCarousel(
     var extras by remember { mutableStateOf<Map<String, MediaItem>>(emptyMap()) }
     val featured = extras[items[index].id] ?: items[index]
 
-    LaunchedEffect(items.joinToString { it.id }, server.url, server.token) {
+    // Warm Coil before the user lands on this shelf so expand doesn't hitch on decode.
+    LaunchedEffect(featured.id, warmArt, server.url, server.token, featured.posterUrl, featured.backdropUrl) {
+        if (!warmArt) return@LaunchedEffect
+        prefetchMediaArt(
+            context, server, featured, ArtKind.Backdrop,
+            config.screenWidthDp, config.screenHeightDp, density,
+        )
+        prefetchMediaArt(
+            context, server, featured, ArtKind.Poster,
+            config.screenWidthDp, config.screenHeightDp, density,
+        )
+        val neighbor = items.getOrNull(index + 1) ?: items.getOrNull(index - 1)
+        if (neighbor != null) {
+            val n = extras[neighbor.id] ?: neighbor
+            prefetchMediaArt(
+                context, server, n, ArtKind.Poster,
+                config.screenWidthDp, config.screenHeightDp, density,
+            )
+        }
+    }
+
+    // Library/continue rows often lack CDN art. Wait out the shelf height animation before
+    // mutating extras so catalog merges don't recompose mid-scroll.
+    LaunchedEffect(items.joinToString { it.id }, server.url, server.token, expanded) {
+        if (!expanded) return@LaunchedEffect
+        delay(260)
         val api = CoogApi(server.url, server.token)
         val missing = items.filter { raw ->
             val cur = extras[raw.id] ?: raw
             !hasCatalogArt(cur)
         }
+        if (missing.isEmpty()) return@LaunchedEffect
+        val batch = LinkedHashMap<String, MediaItem>()
         missing.forEachIndexed { i, raw ->
             if (i > 0) delay(40L)
-            val remote = resolveCatalogArt(api, raw)
-            if (remote != null) {
-                extras = extras + (raw.id to mergeDetails(raw, remote))
+            val remote = resolveCatalogArt(api, raw) ?: return@forEachIndexed
+            batch[raw.id] = mergeDetails(raw, remote)
+            if (batch.size >= 3) {
+                extras = extras + batch
+                batch.clear()
             }
         }
+        if (batch.isNotEmpty()) extras = extras + batch
     }
 
-    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token) {
+    LaunchedEffect(featured.id, featured.imdbId, featured.tmdbId, featured.title, featured.kind, server.url, server.token, expanded) {
+        if (!expanded) return@LaunchedEffect
         if (hasCatalogArt(featured)) return@LaunchedEffect
-        delay(120)
+        delay(260)
         val api = CoogApi(server.url, server.token)
         val remote = resolveCatalogArt(api, featured)
         if (remote != null) {
@@ -281,6 +319,7 @@ private fun RowCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     var trailerPlaying by remember(item.id) { mutableStateOf(false) }
+    var backdropReady by remember(item.id) { mutableStateOf(false) }
     val genres = item.heroGenres().take(2)
     val meta = item.cardMetaLine()
     val resumeAt = item.seasonEpisode()
@@ -309,11 +348,25 @@ private fun RowCard(
                 .then(if (focused) Modifier.border(3.dp, Color.White, CardShape) else Modifier),
         ) {
             if (featured) {
+                // Poster is already in Coil from the peek card — show it under the backdrop so
+                // expand never waits on a cold full-bleed decode.
+                if (!backdropReady) {
+                    PosterArt(
+                        item = item,
+                        kind = ArtKind.Poster,
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.Center,
+                        crossfade = false,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 PosterArt(
                     item = item,
                     kind = ArtKind.Backdrop,
                     contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
+                    crossfade = false,
+                    onSuccess = { backdropReady = true },
                     modifier = Modifier.fillMaxSize(),
                 )
                 // Only while this card holds focus — otherwise audio keeps looping under the rail /
