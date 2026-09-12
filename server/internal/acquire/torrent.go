@@ -119,6 +119,10 @@ func (r *Runner) runTorrent(ctx context.Context, job *store.Job) error {
 	defer reader.Close()
 	reader.SetResponsive()
 	reader.SetReadahead(8 << 20)
+	go func() {
+		<-ctx.Done()
+		_ = reader.Close()
+	}()
 
 	sourcePath := jobs.SourcePath(r.cfg.DataPath, job.ID)
 	source, err := os.Create(sourcePath)

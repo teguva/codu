@@ -164,7 +164,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val video = preparedUrl ?: return
         resumeAtMs = player.currentPosition
         resumeApplied = false
-        prepare(video, lastToken, disableMkvCueSeek = mkvCueSeekDisabled)
+        prepare(video, lastToken, disableMkvCueSeek = mkvCueSeekDisabled, keepPicture = true)
         if (url != null) {
             _textOff.value = false
         }
@@ -181,7 +181,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val video = preparedUrl ?: return
         resumeAtMs = player.currentPosition
         resumeApplied = false
-        prepare(video, lastToken, disableMkvCueSeek = mkvCueSeekDisabled)
+        prepare(video, lastToken, disableMkvCueSeek = mkvCueSeekDisabled, keepPicture = true)
         setTextOff()
     }
 
@@ -205,9 +205,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         _cueLines.value = match?.second.orEmpty()
     }
 
-    private fun prepare(url: String, token: String, disableMkvCueSeek: Boolean) {
+    private fun prepare(url: String, token: String, disableMkvCueSeek: Boolean, keepPicture: Boolean = false) {
         _error.value = null
-        _firstFrame.value = false
+        if (!keepPicture) {
+            _firstFrame.value = false
+        }
         _buffering.value = true
         _ended.value = false
         _cueLines.value = emptyList()

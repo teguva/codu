@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,6 +64,9 @@ func (r *Runner) Loop(ctx context.Context) error {
 		case <-ticker.C:
 			job, err := r.store.ClaimNextJob()
 			if err != nil {
+				if !errors.Is(err, store.ErrNotFound) {
+					slog.Warn("claim job", "err", err)
+				}
 				continue
 			}
 			slog.Info("claimed job", "id", job.ID, "url", events.Redact(job.URL))

@@ -43,6 +43,9 @@ func (r *Runner) run(ctx context.Context, job store.Job) {
 	}
 	if err != nil {
 		if cur, e := r.store.GetJob(job.ID); e != nil || cur.Status == jobs.StatusCancelled || cur.Status == jobs.StatusPaused {
+			if e != nil || cur.Status == jobs.StatusCancelled {
+				jobs.Cleanup(r.cfg.DataPath, job.ID)
+			}
 			return
 		}
 		msg := events.Redact(err.Error())

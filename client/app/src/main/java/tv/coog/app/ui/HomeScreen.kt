@@ -226,20 +226,24 @@ private fun HomeRows(
     ) {
         val viewport = maxHeight
         val gap = 8.dp
-        val prevPeek = (viewport * 0.14f).coerceIn(48.dp, 72.dp)
-        val nextH = (viewport * 0.36f).coerceIn(160.dp, 240.dp)
-        val activeH = (viewport - prevPeek - gap - nextH - gap).coerceAtLeast(240.dp)
+        val prevPeek = (viewport * 0.12f).coerceIn(48.dp, 72.dp)
+        // How much of the next (taller idle) row sticks into the viewport — more than prevPeek.
+        val nextPeek = (viewport * 0.20f).coerceIn(80.dp, 120.dp)
+        // Unfocused shelves keep their original idle height; only the visible peeks change.
+        val idleH = (viewport * 0.36f).coerceIn(160.dp, 240.dp)
+        // Same focused height on every shelf. On row 0 there is no previous peek — that
+        // leftover space shows as a larger next-row peek (fills the viewport, no black bar).
+        val activeH = (viewport - prevPeek - gap - nextPeek - gap).coerceAtLeast(280.dp)
         val heights = shelves.mapIndexed { i, _ ->
-            if (i == focusedRow) activeH else nextH
+            if (i == focusedRow) activeH else idleH
         }
         val yBefore = heights.take(focusedRow).fold(0.dp) { acc, h -> acc + h + gap }
         val targetOffset = if (focusedRow == 0) 0.dp else -(yBefore - prevPeek)
         val offsetY by animateDpAsState(targetOffset, motion, label = "home-offset")
-        val windowH = activeH + gap + nextH
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (focusedRow == 0) windowH else viewport)
+                .height(viewport)
                 .clipToBounds(),
         ) {
             Column(

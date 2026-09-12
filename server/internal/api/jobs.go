@@ -164,8 +164,10 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "job already finished")
 		return
 	}
-	// Mark cancelled first so the worker kills ffmpeg/yt-dlp, then remove the
-	// queue row and partial workdir. Library files are never created until finish.
+	// Mark cancelled first so the worker kills ffmpeg/yt-dlp. Drop the queue
+	// row immediately for the UI, but leave the workdir for the worker to close
+	// files cleanly — deleting open ffmpeg outputs has wedged the single worker
+	// and blocked every later job (including Real-Debrid downloads).
 	job.Status = jobs.StatusCancelled
 	job.Error = "cancelled"
 	job.Ready = false
@@ -173,7 +175,6 @@ func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	jobs.Cleanup(s.cfg.DataPath, job.ID)
 	_ = s.store.DeleteJob(job.ID)
 	s.note("warn", "api", "job.cancelled", "cancelled "+job.Title, job.ID, job.MediaID)
 	s.hub.Broadcast(events.Event{Type: "job.cancelled", Job: publicJob(job)})
